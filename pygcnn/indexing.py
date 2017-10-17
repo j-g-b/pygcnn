@@ -40,16 +40,25 @@ def index_graph(graph, edge_weights, n_timepoints):
 		neighborhoods.append(d_neighborhood.nodes())
 	return subgraph_features, neighborhoods
 
-def plotNNFilter(units):
+def plotNNFilter(units, weights):
     filters = units.shape[2]
+    filter_weights = weights.shape[1]
+    filter_size = weights.shape[0]
     plt.figure(1, figsize=(20,20))
     n_columns = math.ceil(np.sqrt(filters))
     n_rows = n_columns
-    for j in [0,1,2,3,4]:
+    for j in [0,1]:
     	plt.clf()
     	for i in range(filters):
         	plt.subplot(n_rows, n_columns, i+1)
         	plt.title('Filter ' + str(i))
         	plt.imshow(np.reshape(units[j,:,i], (28,28)), interpolation="nearest", cmap="gray")
         plt.show()
-    	plt.pause(0.01)
+    	plt.pause(0.001)
+    	plt.clf()
+    	for i in range(filter_weights):
+        	plt.subplot(n_rows, n_columns, i+1)
+        	plt.title('Filter ' + str(i))
+        	plt.imshow(np.reshape(weights[:,i,:], (4,4)), interpolation="nearest", cmap="gray")
+        plt.show()
+    	plt.pause(0.001)

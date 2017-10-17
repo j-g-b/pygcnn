@@ -11,22 +11,38 @@ from pygcnn.layers import *
 # Build mnist graph
 pic_size = 28
 mnist_graph = nx.grid_2d_graph(pic_size, pic_size)
-coord_map = {mnist_graph.nodes()[i]: mnist_graph.nodes()[i][0]*28 + mnist_graph.nodes()[i][1] for i in range(len(mnist_graph.nodes()))}
+coord_map = {mnist_graph.nodes()[i]: mnist_graph.nodes()[i][0]*pic_size + mnist_graph.nodes()[i][1] for i in range(len(mnist_graph.nodes()))}
 mnist_graph = nx.relabel_nodes(mnist_graph, coord_map)
+
+# for node in mnist_graph.nodes():
+# 	tl = node - pic_size - 1
+# 	tr = node - pic_size + 1
+# 	bl = node + pic_size - 1
+# 	br = node + pic_size + 1
+# 	nodes_to_add = [node]
+# 	if tl >= 0 and not node%pic_size == 0:
+# 		nodes_to_add.append(tl)
+# 	if tr >= 0 and not node%pic_size == (pic_size-1):
+# 		nodes_to_add.append(tr)
+# 	if bl < pic_size**2 and not node%pic_size == 0:
+# 		nodes_to_add.append(bl)
+# 	if br < pic_size**2 and not node%pic_size == (pic_size-1):
+# 		nodes_to_add.append(br)
+# 	mnist_graph.add_star(nodes_to_add)
 
 mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
 n_node_features = 1
-batch_size = 50
+batch_size = 200
 n_timepoints = 20
-graph_hidden_layer_size = 5
-filter_size = 20
-n_filter_features = 25
+graph_hidden_layer_size = 10
+filter_size = 16
+n_filter_features = 10
 hidden_layer_size = 50
-keep_prob = 0.5
+keep_prob = 1.0
 learning_rate = 1e-4
 
-edge_weights = np.array([0.9, 0.9, 0.9])
+edge_weights = np.array([0.9, 0.9])
 keep_prob_ph = tf.placeholder(tf.float32)
 
 # Placeholders
@@ -66,7 +82,7 @@ for epoch in range(2000):
 		print "Accuracy: " + str(acc) + " Test accuracy: " + str(test_acc)
 		first_layer_activation = sess.run(conv_output, feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0})
 		plt.clf()
-		plotNNFilter(first_layer_activation)
+		plotNNFilter(first_layer_activation, sess.run(Convolve1.filter_weights, feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0}))
 		plt.pause(0.01)
 
 test_accuracy = []
