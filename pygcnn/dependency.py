@@ -20,9 +20,9 @@ taiga_client = TaigaClient()
 train_cls = client.get_training_set().index.format()
 test_cls = client.get_test_set().index.format()
 
-exp_features = taiga_client.get(name='ccle-rnaseq-expression-genes', version='3').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
-mut_features = taiga_client.get(name='ccle-mis-mut-binary-matrix', version='1').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
-cn_features = taiga_client.get(name='ccle-copy-number-variants-hgnc-mapped', version='4').rename(lambda x: x.split(" (", 1)[0]).transpose()
+exp_features = taiga_client.get(name='rnaseq-gene-expression-5362', file='RNAseq_CCLE_RSEM_TPM', version='6').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
+mut_features = taiga_client.get(name='hotspot-924f', version='1').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
+cn_features = taiga_client.get(name='gene-level-cn-87aa', file='full_gene_CN', version='3').rename(lambda x: x.split(" (", 1)[0]).transpose()
 lin_features = taiga_client.get(name='ccle-lines-lineages', version='4')
 cls_to_train = list(set(train_cls) & set(list(exp_features.index)) & set(list(mut_features.index)) & set(list(cn_features.index)) & set(list(exp_features.index)))
 exp_features = {'train': exp_features.loc[cls_to_train].dropna(axis=0, how='all'), 'test': exp_features.loc[test_cls]}
@@ -86,6 +86,7 @@ hidden_layer_size = 5000
 keep_prob = 1.0
 learning_rate = 2.5e-5
 soft_sharing = 0.95
+filter_shape = [[filter_size, n_filter_features, n_node_features]]
 
 edge_weights = np.array([0.9, 0.9])
 keep_prob_ph = tf.placeholder(tf.float32)
@@ -96,9 +97,7 @@ dep_x = tf.placeholder("float32", shape=(batch_size, features_to_use.shape[1], f
 dep_y = tf.placeholder("float32", shape=(batch_size, targets.shape[1]))
 lin_x = tf.placeholder("float32", shape=(batch_size, lin_features['train'].shape[1]))
 
-subgraph_features, neighborhoods = index_graph(dep_graph, edge_weights, n_timepoints)
-
-Convolve1 = GraphConvolution(name='first_conv', subgraph_features=subgraph_features, neighborhoods=neighborhoods, filter_shape=[filter_size, n_filter_features, n_node_features], n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
+Convolve1 = GraphConvolution(name='first_conv', G=dep_graph, filter_shape=filter_shape, n_layers=1, n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
 conv_output = Convolve1(dep_x)
 convolved_features = tf.reshape(conv_output, [-1, conv_output.get_shape().as_list()[1]*conv_output.get_shape().as_list()[2]])
 OutputMLP = MLP(name='dense_output', dims=[[convolved_features.get_shape().as_list()[1] + lin_features['train'].shape[1], hidden_layer_size], [hidden_layer_size, targets.shape[1]]], output_fun=tf.identity, dropout=[1 - keep_prob_ph, 0], mask=[None, hidden_mask])

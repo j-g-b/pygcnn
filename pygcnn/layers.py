@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 from sklearn.model_selection import train_test_split
 import datetime
+import community as cm
 
 from pygcnn.utils import *
 from pygcnn.indexing import *
@@ -133,29 +134,65 @@ class MLP(object):
 		return output
 
 class GraphConvolution(object):
-	def __init__(self, name, subgraph_features, neighborhoods, filter_shape, n_timepoints=20, edge_weights=[0.9, 0.9], act_fun=tf.nn.elu, index_hidden_layer_size=10):
+	def __init__(self, name, G, filter_shape, n_layers=2, n_timepoints=20, edge_weights=[0.9, 0.9], act_fun=tf.nn.elu, index_hidden_layer_size=10, partition_resolution=0.5):
 		# filter shape should be (filter_size, n_filter_output_features, n_node_features)
 		self.name = name
-		self.subgraph_features = np.concatenate(subgraph_features, axis=0)
-		self.n_nodes = len(neighborhoods)
-		self.neighborhood_sizes = [len(neighborhoods[i]) for i in range(len(neighborhoods))]
-		self.neighborhoods = np.concatenate([neighborhoods[i] + [self.n_nodes]*(max(self.neighborhood_sizes)-self.neighborhood_sizes[i]) for i in range(len(neighborhoods))], axis=0)
-		self.graph_feature_padder = np.concatenate([range(sum(self.neighborhood_sizes[0:i]), sum(self.neighborhood_sizes[0:(i+1)])) + [self.subgraph_features.shape[0]]*(max(self.neighborhood_sizes)-self.neighborhood_sizes[i]) for i in range(len(neighborhoods))], axis=0)
-		self.filter_shape = filter_shape
-		self.filter_weights = tf_init_weights(shape=filter_shape)
-		self.filter_bias = tf_init_bias(shape=[filter_shape[1]])
+		self.n_layers = n_layers
 		self.edge_weights = edge_weights
 		self.act_fun = act_fun
 		self.n_timepoints = n_timepoints
-		self.indexing_mlp = MLP(name=name + '_indexing_mlp', dims=[[n_timepoints, index_hidden_layer_size], [index_hidden_layer_size, filter_shape[0]]], act_fun=[tf.nn.elu], dropout=[0,0], output_fun=tf.nn.softmax)
+		self.G = [G]
+		self.partition = []
+		self.subgraph_features = []
+		self.n_nodes = []
+		self.neighborhood_sizes = []
+		self.neighborhoods = []
+		self.partition_sizes = []
+		self.graph_feature_padder = []
+		self.filter_shape = []
+		self.filter_weights = []
+		self.filter_bias = []
+		self.indexing_mlp = []
+		# Set up convolutional layers with induced graphs
+		for i in range(n_layers):
+			best_partition = cm.best_partition(self.G[i], resolution=partition_resolution)
+			partition_dict = {val: [] for val in list(set(best_partition.values()))}
+			for j in range(len(best_partition.keys())):
+				partition_dict[best_partition.values()[j]].append(best_partition.keys()[j])
+			partition_arr = list(partition_dict.values())
+			self.partition_sizes.append([len(p) for p in partition_arr])
+			max_comm_size = max([len(p) for p in partition_arr])
+			for j in range(len(partition_arr)):
+				pad = (max_comm_size - len(partition_arr[j]))*[len(self.G[i].nodes())]
+				partition_arr[j] = partition_arr[j] + pad
+			self.partition.append(np.concatenate(partition_arr, axis=0))
+			induced_graph = cm.induced_graph(best_partition, self.G[i])
+			self.G.append(induced_graph)
+			self.indexing_mlp.append(MLP(name=name + '_indexing_mlp_' + str(i), dims=[[n_timepoints, index_hidden_layer_size], [index_hidden_layer_size, filter_shape[i][0]]], act_fun=[tf.nn.elu], dropout=[0,0], output_fun=tf.nn.softmax))
+		for i in range(n_layers):
+			subgraph_features, neighborhoods = index_graph(self.G[i], edge_weights, n_timepoints)
+			n_nodes = len(neighborhoods)
+			neighborhood_sizes = [len(neighborhoods[k]) for k in range(len(neighborhoods))]
+			self.subgraph_features.append(np.concatenate(subgraph_features, axis=0))
+			self.n_nodes.append(n_nodes)
+			self.neighborhood_sizes.append(neighborhood_sizes)
+			self.neighborhoods.append(np.concatenate([neighborhoods[k] + [n_nodes]*(max(neighborhood_sizes)-neighborhood_sizes[k]) for k in range(len(neighborhoods))], axis=0))
+			self.graph_feature_padder.append(np.concatenate([range(sum(neighborhood_sizes[0:k]), sum(neighborhood_sizes[0:(k+1)])) + [np.concatenate(subgraph_features, axis=0).shape[0]]*(max(neighborhood_sizes)-neighborhood_sizes[k]) for k in range(len(neighborhoods))], axis=0))
+			self.filter_shape.append(filter_shape[i])
+			self.filter_weights.append(tf_init_weights(shape=filter_shape[i]))
+			self.filter_bias.append(tf_init_bias(shape=[filter_shape[i][1]]))
 	def __call__(self, inputs):
 		X = tf.transpose(inputs, perm=[1,2,0])
-		indexer_output = self.indexing_mlp(tf.constant(self.subgraph_features, dtype=tf.float32))
-		indexer_output = tf.gather(tf.concat([indexer_output, tf.zeros([max(self.neighborhood_sizes), indexer_output.get_shape().as_list()[1]])], axis=0), tf.constant(self.graph_feature_padder, dtype=tf.int64))
-		indexer_output = tf.reshape(indexer_output, shape=[self.n_nodes, max(self.neighborhood_sizes), -1])
-		X_neighborhood = tf.gather(tf.concat([X, tf.zeros([max(self.neighborhood_sizes), X.get_shape().as_list()[1], X.get_shape().as_list()[2]])], axis=0), tf.constant(self.neighborhoods, dtype=tf.int64))
-		X_neighborhood = tf.reshape(X_neighborhood, shape=[self.n_nodes, max(self.neighborhood_sizes), self.filter_shape[2], -1])
-		indexed_features = tf.matmul(tf.tile(tf.expand_dims(tf.transpose(indexer_output, perm=[0,2,1]), 0), [self.filter_shape[2], 1, 1, 1]), tf.transpose(X_neighborhood, perm=[2,0,1,3]))
-		convolved_signal = tf.matmul(tf.reshape(tf.transpose(indexed_features, perm=[3,1,2,0]), shape=[X.get_shape().as_list()[2], -1, self.filter_shape[0]*self.filter_shape[2]]), tf.tile(tf.expand_dims(tf.transpose(tf.reshape(self.filter_weights, shape=[self.filter_shape[1], -1])), 0), [X.get_shape().as_list()[2], 1, 1]))
-		return convolved_signal
+		for i in range(self.n_layers):
+			indexer_output = self.indexing_mlp[i](tf.constant(self.subgraph_features[i], dtype=tf.float32))
+			indexer_output = tf.gather(tf.concat([indexer_output, tf.zeros([1, indexer_output.get_shape().as_list()[1]])], axis=0), tf.constant(self.graph_feature_padder[i], dtype=tf.int64))
+			indexer_output = tf.reshape(indexer_output, shape=[self.n_nodes[i], max(self.neighborhood_sizes[i]), -1])
+			X_neighborhood = tf.gather(tf.concat([X, tf.zeros([1, X.get_shape().as_list()[1], X.get_shape().as_list()[2]])], axis=0), tf.constant(self.neighborhoods[i], dtype=tf.int64))
+			X_neighborhood = tf.reshape(X_neighborhood, shape=[self.n_nodes[i], max(self.neighborhood_sizes[i]), self.filter_shape[i][2], -1])
+			indexed_features = tf.matmul(tf.tile(tf.expand_dims(tf.transpose(indexer_output, perm=[0,2,1]), 0), [self.filter_shape[i][2], 1, 1, 1]), tf.transpose(X_neighborhood, perm=[2,0,1,3]))
+			convolved_signal = tf.matmul(tf.reshape(tf.transpose(indexed_features, perm=[3,1,2,0]), shape=[X.get_shape().as_list()[2], -1, self.filter_shape[i][0]*self.filter_shape[i][2]]), tf.tile(tf.expand_dims(tf.transpose(tf.reshape(self.filter_weights[i], shape=[self.filter_shape[i][1], -1])), 0), [X.get_shape().as_list()[2], 1, 1]))
+			convolved_signal = tf.transpose(convolved_signal, perm=[1,2,0])
+			convolved_signal = tf.gather(tf.concat([convolved_signal, -np.inf*tf.ones([1, convolved_signal.get_shape().as_list()[1], convolved_signal.get_shape().as_list()[2]])], axis=0), tf.constant(self.partition[i], dtype=tf.int64))
+			X = tf.reduce_max(tf.reshape(convolved_signal, shape=[len(self.partition_sizes[i]), max(self.partition_sizes[i]), convolved_signal.get_shape().as_list()[1], convolved_signal.get_shape().as_list()[2]]), axis=1)
+		return tf.transpose(X, perm=[2,0,1])
 
