@@ -59,6 +59,6 @@ def plotNNFilter(units, weights):
     	for i in range(filter_weights):
         	plt.subplot(n_rows, n_columns, i+1)
         	plt.title('Filter ' + str(i))
-        	plt.imshow(np.reshape(weights[:,i,0], (4,4)), interpolation="nearest", cmap="gray")
+        	plt.imshow(np.reshape(weights[:,i,0], (5,5)), interpolation="nearest", cmap="gray")
         plt.show()
     	plt.pause(0.001)

@@ -3,9 +3,65 @@ import networkx as nx
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import pandas as pd
 from scipy.stats.stats import pearsonr
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_regression
+
+def focal_node_index(GC, session, layer=0):
+	focal_node_indices = [sum(GC.neighborhood_sizes[layer][0:i]) for i in range(GC.n_nodes[layer])]
+	focal_node_indices = [0] + focal_node_indices
+	focal_node_indices = focal_node_indices[0:len(focal_node_indices)-1]
+	indexer_output = GC.indexing_mlp[layer](tf.constant(GC.subgraph_features[layer][focal_node_indices, :], dtype=tf.float32))
+	return indexer_output.eval(session=session)
+
+def align_and_concat(df_list, margin='col'):
+	# assumes concat happens on opposite margin from align; margin specifies align margin
+	if margin == 'row':
+		df_t_list = [df.transpose() for df in df_list]
+		common_fields = set(list(df_t_list[0]))
+		for i in range(len(df_t_list)-1):
+			common_fields = common_fields & set(list(df_t_list[i+1]))
+		df_al_list = [df[list(common_fields)] for df in df_t_list]
+		return pd.concat(df_al_list).transpose()
+	if margin == 'col':
+		common_fields = set(list(df_list[0]))
+		for i in range(len(df_list)-1):
+			common_fields = common_fields & set(list(df_list[i+1]))
+		df_al_list = [df[list(common_fields)] for df in df_list]
+		return pd.concat(df_al_list)
+
+def draw_neighborhood(G, node, steps=1):
+	neighbors = [node]
+	while steps > 0:
+		for neighbor in neighbors:
+			neighbors = neighbors + G.neighbors(neighbor)
+		steps = steps - 1
+	nx.draw_networkx(G.subgraph(neighbors))
+	plt.show()
+
+def nearest_neighbors(normalized_embeddings, session, k, int2gene):
+	graph_dict = {}
+	pairwise_distances = tf.matmul(normalized_embeddings, normalized_embeddings, transpose_b=True).eval(session=session)
+	for i in range(pairwise_distances.shape[0]):
+		nearest = (-pairwise_distances[i, :]).argsort()[1:k + 1]
+		sorted_sim = np.sort(-pairwise_distances[i, :])[1:k + 1]
+		graph_dict[int2gene[i]] = {int2gene[nearest[l]]: {'weight': -sorted_sim[l]} for l in range(k)}
+	return nx.from_dict_of_dicts(graph_dict)
+
+def find_similar_genes(similarity, query_genes, query_genes_ph, session, gene2int, int2gene):
+	sim = session.run(similarity, feed_dict={query_genes_ph: np.array([gene2int[k] for k in query_genes])})
+	for i in xrange(len(query_genes)):
+		query_gene = query_genes[i]
+		top_k = 8
+		nearest = (-sim[i, :]).argsort()[1:top_k + 1]
+		sorted_sim = np.sort(-sim[i, :])[1:top_k + 1]
+		log_str = 'Nearest to %s:' % query_gene
+		for k in xrange(top_k):
+			close_gene = int2gene[nearest[k]]
+			close_dist = str(-round(sorted_sim[k], 3))
+			log_str = '%s %s,' % (log_str, close_gene + " (" + close_dist + ")")
+		print(log_str)
 
 def select_k_best(features, targets, k):
 	selected_features = {}

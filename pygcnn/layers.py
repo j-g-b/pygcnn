@@ -56,53 +56,6 @@ class Dataset(object):
 		next_batch = (np.stack(next_x_batch, axis=0), np.stack(next_y_batch, axis=0), np.stack(next_id_batch, axis=0))
 		return next_batch
 
-class DataDict(object):
-	def __init__(self, name, sample_ids):
-		self.name = name
-		self.sample_ids = sample_ids
-		self.sample_dict = dict.fromkeys(sample_ids)
-		self.feature_type_dict = {}
-		for sample_id in self.sample_dict.keys():
-			self.sample_dict[sample_id] = {}
-	def add_df(self, feature_type, df):
-		self.feature_type_dict[feature_type] = {'names': list(df)}
-		common_samples = list(set(list(df.index)) & set(self.sample_ids))
-		for sample_id in common_samples:
-			self.sample_dict[sample_id][feature_type] = np.array(df.loc[sample_id])
-		self.sample_ids = common_samples
-		self.sample_dict = {sample_id: self.sample_dict[sample_id] for sample_id in common_samples}
-	def gather_samples(self, sample_ids, feature_type):
-		return {sample_id: self.sample_dict[sample_id][feature_type] for sample_id in sample_ids}
-	def train_test_split(self, test_size):
-		indices = np.arange(len(self.sample_ids))
-		np.random.shuffle(indices)
-		sample_scramble = [self.sample_ids[i] for i in indices.tolist()]
-		self.train_ids = sample_scramble[0:int(np.floor((1.0 - test_size)*len(sample_scramble)))]
-		self.test_ids = sample_scramble[(int(np.floor((1.0 - test_size)*len(sample_scramble)))):]
-	def gather_features(self, feature_types, sample_ids=None):
-		features = []
-		if not sample_ids:
-			sample_ids = self.sample_ids
-		for feature_type in feature_types:
-			sample_features = self.gather_samples(sample_ids, feature_type)
-			features.append(np.stack([sample_features[sample_id] for sample_id in sample_ids]))
-		return features
-	def combine_feature_types(self, feature_types, sample_ids=None):
-		if not sample_ids:
-			sample_ids = self.sample_ids
-		if len(feature_types) == 1:
-			return self.gather_features(feature_types)[0]
-		else:
-			features = []
-			common_features = self.feature_type_dict[feature_types[0]]['names']
-			for feature_type in feature_types:
-				common_features = list(set(common_features) & set(self.feature_type_dict[feature_type]['names']))
-			for feature_type in feature_types:
-				name_index_dict = {self.feature_type_dict[feature_type]['names'][i]: i for i in range(len(self.feature_type_dict[feature_type]['names']))}
-				f = self.gather_features([feature_type], sample_ids)[0]
-				features.append(np.stack([f[:, name_index_dict[name]] for name in common_features], axis=-1))
-			return np.stack(features, axis=-1)
-
 class Layer(object):
 	def __init__(self, name, input_dim, output_dim, act_fun=tf.nn.elu, dropout=0, mask=None):
 		self.name = name
@@ -134,11 +87,11 @@ class MLP(object):
 		return output
 
 class GraphConvolution(object):
-	def __init__(self, name, G, filter_shape, n_layers=2, n_timepoints=20, edge_weights=[0.9, 0.9], act_fun=tf.nn.elu, index_hidden_layer_size=10, partition_resolution=0.5):
+	def __init__(self, name, G, filter_shape, n_layers=2, n_timepoints=20, edge_weights=[0.9, 0.9], act_fun=tf.nn.elu, index_hidden_layer_size=10, partition_resolution=[0.5, 0.5]):
 		# filter shape should be (filter_size, n_filter_output_features, n_node_features)
 		self.name = name
 		self.n_layers = n_layers
-		self.edge_weights = edge_weights
+		self.edge_weights = []
 		self.act_fun = act_fun
 		self.n_timepoints = n_timepoints
 		self.G = [G]
@@ -153,9 +106,10 @@ class GraphConvolution(object):
 		self.filter_weights = []
 		self.filter_bias = []
 		self.indexing_mlp = []
+		self.activation = []
 		# Set up convolutional layers with induced graphs
 		for i in range(n_layers):
-			best_partition = cm.best_partition(self.G[i], resolution=partition_resolution)
+			best_partition = cm.best_partition(self.G[i], resolution=partition_resolution[i])
 			partition_dict = {val: [] for val in list(set(best_partition.values()))}
 			for j in range(len(best_partition.keys())):
 				partition_dict[best_partition.values()[j]].append(best_partition.keys()[j])
@@ -170,7 +124,7 @@ class GraphConvolution(object):
 			self.G.append(induced_graph)
 			self.indexing_mlp.append(MLP(name=name + '_indexing_mlp_' + str(i), dims=[[n_timepoints, index_hidden_layer_size], [index_hidden_layer_size, filter_shape[i][0]]], act_fun=[tf.nn.elu], dropout=[0,0], output_fun=tf.nn.softmax))
 		for i in range(n_layers):
-			subgraph_features, neighborhoods = index_graph(self.G[i], edge_weights, n_timepoints)
+			subgraph_features, neighborhoods = index_graph(self.G[i], edge_weights[i], n_timepoints)
 			n_nodes = len(neighborhoods)
 			neighborhood_sizes = [len(neighborhoods[k]) for k in range(len(neighborhoods))]
 			self.subgraph_features.append(np.concatenate(subgraph_features, axis=0))
@@ -181,6 +135,7 @@ class GraphConvolution(object):
 			self.filter_shape.append(filter_shape[i])
 			self.filter_weights.append(tf_init_weights(shape=filter_shape[i]))
 			self.filter_bias.append(tf_init_bias(shape=[filter_shape[i][1]]))
+			self.edge_weights.append(edge_weights[i])
 	def __call__(self, inputs):
 		X = tf.transpose(inputs, perm=[1,2,0])
 		for i in range(self.n_layers):
@@ -191,6 +146,7 @@ class GraphConvolution(object):
 			X_neighborhood = tf.reshape(X_neighborhood, shape=[self.n_nodes[i], max(self.neighborhood_sizes[i]), self.filter_shape[i][2], -1])
 			indexed_features = tf.matmul(tf.tile(tf.expand_dims(tf.transpose(indexer_output, perm=[0,2,1]), 0), [self.filter_shape[i][2], 1, 1, 1]), tf.transpose(X_neighborhood, perm=[2,0,1,3]))
 			convolved_signal = tf.matmul(tf.reshape(tf.transpose(indexed_features, perm=[3,1,2,0]), shape=[X.get_shape().as_list()[2], -1, self.filter_shape[i][0]*self.filter_shape[i][2]]), tf.tile(tf.expand_dims(tf.transpose(tf.reshape(self.filter_weights[i], shape=[self.filter_shape[i][1], -1])), 0), [X.get_shape().as_list()[2], 1, 1]))
+			self.activation.append(convolved_signal)
 			convolved_signal = tf.transpose(convolved_signal, perm=[1,2,0])
 			convolved_signal = tf.gather(tf.concat([convolved_signal, -np.inf*tf.ones([1, convolved_signal.get_shape().as_list()[1], convolved_signal.get_shape().as_list()[2]])], axis=0), tf.constant(self.partition[i], dtype=tf.int64))
 			X = tf.reduce_max(tf.reshape(convolved_signal, shape=[len(self.partition_sizes[i]), max(self.partition_sizes[i]), convolved_signal.get_shape().as_list()[1], convolved_signal.get_shape().as_list()[2]]), axis=1)
