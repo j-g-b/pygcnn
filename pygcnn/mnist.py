@@ -34,24 +34,24 @@ mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
 n_node_features = 1
 batch_size = 50
-n_timepoints = 20
-graph_hidden_layer_size = 10
+n_timepoints = 64
+graph_hidden_layer_size = 32
 filter_size = 25
 n_filter_features = 32
 hidden_layer_size = 1024
 keep_prob = 1.0
 learning_rate = 1e-5
 
-edge_weights = [np.array([0.9, 0.9]), np.array([0.9, 0.9])]
+edge_weights = [np.array([0.9, 0.9])]
 keep_prob_ph = tf.placeholder(tf.float32)
 
-filter_shape = [[filter_size, n_filter_features, n_node_features], [filter_size, 64, n_filter_features]]
+filter_shape = [[filter_size, n_filter_features, n_node_features]]
 
 # Placeholders
 picture_x = tf.placeholder("float32", shape=(batch_size, 784))
 picture_y = tf.placeholder("float32", shape=(batch_size, 10))
 
-Convolve1 = GraphConvolution(name='first_conv', G=mnist_graph, n_layers=2, filter_shape=filter_shape, partition_resolution=[0.025, 0.2], n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
+Convolve1 = GraphConvolution(name='first_conv', G=mnist_graph, n_layers=1, filter_shape=filter_shape, partition_resolution=[0.025], n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
 conv_output = Convolve1(tf.expand_dims(picture_x, 2))
 convolved_features = tf.reshape(conv_output, [-1, conv_output.get_shape().as_list()[1]*conv_output.get_shape().as_list()[2]])
 OutputMLP = MLP(name='dense_output', dims=[[convolved_features.get_shape().as_list()[1], hidden_layer_size], [hidden_layer_size, 10]], output_fun=tf.identity, dropout=[0, 1 - keep_prob_ph])

@@ -8,6 +8,13 @@ from scipy.stats.stats import pearsonr
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_regression
 
+def evaluate_gradient(loss, tensor_list, session, feed_dict):
+	grad_list = tf.gradients(loss, tensor_list)
+	eval_grad_list = []
+	for grad in grad_list:
+		eval_grad_list.append(session.run(grad, feed_dict=feed_dict))
+	return eval_grad_list
+
 def focal_node_index(GC, session, layer=0):
 	focal_node_indices = [sum(GC.neighborhood_sizes[layer][0:i]) for i in range(GC.n_nodes[layer])]
 	focal_node_indices = [0] + focal_node_indices

@@ -70,7 +70,7 @@ yhat = OutputMLP(tf.concat([convolved_features], axis=1))
 
 prediction = yhat
 cost = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=dep_y, logits=yhat))
-updates = tf.train.AdadeltaOptimizer(learning_rate=1).minimize(cost)
+updates = tf.train.AdamOptimizer(learning_rate).minimize(cost)
 
 print "Initializing variables..."
 sess = tf.Session()
@@ -82,7 +82,7 @@ mlp_1_weights = []
 mlp_2_weights = []
 plt.ion()
 print "Starting training..."
-for epoch in range(1000):
+for epoch in range(2000):
 	dep_batch = dependency.next_batch(batch_size)
 	dep_val_batch = dependency.next_test_batch(batch_size)
 	deps = dep_batch[0]

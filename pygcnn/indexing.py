@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 from pygcnn.utils import *
 import math
 
-def tf_init_weights(shape):
+def tf_init_weights(shape, n_inputs):
     """ Weight initialization """
     weights = tf.random_normal(shape, stddev=np.sqrt(2.0 / shape[0]))
     return tf.Variable(weights)
