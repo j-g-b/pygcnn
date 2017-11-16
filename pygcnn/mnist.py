@@ -34,15 +34,15 @@ mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
 n_node_features = 1
 batch_size = 50
-n_timepoints = 64
+n_timepoints = 16
 graph_hidden_layer_size = 32
 filter_size = 25
 n_filter_features = 32
 hidden_layer_size = 1024
 keep_prob = 1.0
-learning_rate = 1e-5
+learning_rate = 1e-3
 
-edge_weights = [np.array([0.9, 0.9])]
+edge_weights = [np.array([0.3, 0.3])]
 keep_prob_ph = tf.placeholder(tf.float32)
 
 filter_shape = [[filter_size, n_filter_features, n_node_features]]
@@ -51,7 +51,7 @@ filter_shape = [[filter_size, n_filter_features, n_node_features]]
 picture_x = tf.placeholder("float32", shape=(batch_size, 784))
 picture_y = tf.placeholder("float32", shape=(batch_size, 10))
 
-Convolve1 = GraphConvolution(name='first_conv', G=mnist_graph, n_layers=1, filter_shape=filter_shape, partition_resolution=[0.025], n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
+Convolve1 = GraphConvolution(name='first_conv', G=mnist_graph, n_layers=1, filter_shape=filter_shape, partition_resolution=[0], n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
 conv_output = Convolve1(tf.expand_dims(picture_x, 2))
 convolved_features = tf.reshape(conv_output, [-1, conv_output.get_shape().as_list()[1]*conv_output.get_shape().as_list()[2]])
 OutputMLP = MLP(name='dense_output', dims=[[convolved_features.get_shape().as_list()[1], hidden_layer_size], [hidden_layer_size, 10]], output_fun=tf.identity, dropout=[0, 1 - keep_prob_ph])
@@ -68,7 +68,10 @@ sess.run(tf.global_variables_initializer())
 loss = []
 test_loss = []
 plt.ion()
-for i in range(20000):
+fig = plt.figure()
+init_filter_weights = Convolve1.filter_weights[0].eval(session=sess).flatten()
+init_index_weights = Convolve1.indexing_mlp[0].layers[0].weights.eval(session=sess).flatten()
+for i in range(1000):
 	picture_batch = mnist.train.next_batch(batch_size)
 	picture_val_batch = mnist.validation.next_batch(batch_size)
 	pictures = picture_batch[0]
@@ -84,6 +87,26 @@ for i in range(20000):
 		plt.clf()
 		plotNNFilter(first_layer_activation, sess.run(Convolve1.filter_weights[0], feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0}))
 		plt.pause(0.01)
+		plt.clf()
+		draw_neighborhood(Convolve1, 0, sess, fig, steps=2)
+		plt.pause(0.01)
+		fig.clf()
+		plt.clf()
+		draw_neighborhood(Convolve1, 4, sess, fig, steps=2)
+		plt.pause(0.01)
+		fig.clf()
+		plt.clf()
+		draw_neighborhood(Convolve1, 23, sess, fig, steps=2, highlight=24)
+		plt.pause(0.01)
+		fig.clf()
+		plt.clf()
+		draw_neighborhood(Convolve1, 123, sess, fig, steps=2, highlight=124)
+		plt.pause(0.01)
+		fig.clf()
+		plt.clf()
+		draw_neighborhood(Convolve1, 79, sess, fig, steps=2, highlight=81)
+		plt.pause(0.01)
+		fig.clf()
 
 test_accuracy = []
 for i in range(100):

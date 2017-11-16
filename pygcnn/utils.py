@@ -15,13 +15,6 @@ def evaluate_gradient(loss, tensor_list, session, feed_dict):
 		eval_grad_list.append(session.run(grad, feed_dict=feed_dict))
 	return eval_grad_list
 
-def focal_node_index(GC, session, layer=0):
-	focal_node_indices = [sum(GC.neighborhood_sizes[layer][0:i]) for i in range(GC.n_nodes[layer])]
-	focal_node_indices = [0] + focal_node_indices
-	focal_node_indices = focal_node_indices[0:len(focal_node_indices)-1]
-	indexer_output = GC.indexing_mlp[layer](tf.constant(GC.subgraph_features[layer][focal_node_indices, :], dtype=tf.float32))
-	return indexer_output.eval(session=session)
-
 def align_and_concat(df_list, margin='col'):
 	# assumes concat happens on opposite margin from align; margin specifies align margin
 	if margin == 'row':
@@ -38,13 +31,32 @@ def align_and_concat(df_list, margin='col'):
 		df_al_list = [df[list(common_fields)] for df in df_list]
 		return pd.concat(df_al_list)
 
-def draw_neighborhood(G, node, steps=1):
+def draw_neighborhood(GC, node, session, fig, steps=1, highlight=None, layer=0):
+	G = GC.G[layer]
+	if highlight is None:
+		highlight = node
 	neighbors = [node]
 	while steps > 0:
 		for neighbor in neighbors:
 			neighbors = neighbors + G.neighbors(neighbor)
 		steps = steps - 1
-	nx.draw_networkx(G.subgraph(neighbors))
+	nodelist = list(set(neighbors))
+	color = ['b' if n is not highlight else 'r' for n in nodelist]
+	ax1 = fig.add_subplot(221)
+	nx.draw_networkx(G.subgraph(nodelist), nodelist=nodelist, node_color=color)
+	neighborhood_start = node*max(GC.neighborhood_sizes[layer])
+	index = []
+	for i in range(GC.neighborhood_sizes[layer][node]):
+		if GC.neighborhoods[0][neighborhood_start + i] == highlight:
+			index.append(sum(GC.neighborhood_sizes[layer][0:node]) + i)
+	highlighted_indexing = np.take(GC.subgraph_features[layer], indices=index, axis=0)
+	soft_filter_indexing = GC.indexing_mlp[layer](tf.constant(highlighted_indexing, dtype=tf.float32))
+	ax2 = fig.add_subplot(222)
+	plt.bar(np.arange(highlighted_indexing.shape[1]), height=highlighted_indexing.flatten())
+	ax3 = fig.add_subplot(223)
+	plt.imshow(soft_filter_indexing.eval(session=session), cmap="gray")
+	ax3 = fig.add_subplot(224)
+	plt.bar(np.arange(soft_filter_indexing.eval(session=session).shape[1]), height=soft_filter_indexing.eval(session=session).flatten())
 	plt.show()
 
 def nearest_neighbors(normalized_embeddings, session, k, int2gene):
@@ -205,16 +217,15 @@ def neighborhood(graph, node_id, max_depth):
 					d_neighbors.append(child_node)
 	return d_neighbors
 
-
-def normalized_adj(subgraph, weight='None'):
-    adj = nx.adjacency_matrix(subgraph)
-    rowsum = np.array(np.absolute(adj).sum(1))
-    d_inv = np.power(rowsum, -1.0).flatten()
+def normalized_adj(subgraph, weight='None', alpha=0.5):
+    degrees = np.array([subgraph.degree(node) for node in subgraph.nodes()])
+    d_inv = np.power(degrees, -1.0).flatten()
     d_inv[np.isinf(d_inv)] = 0.
     d_mat_inv = sp.diags(d_inv)
     weighted_adj = nx.adjacency_matrix(subgraph)
     res = d_mat_inv.dot(weighted_adj).tocoo()
-    diag = (1.0 - np.array(np.absolute(res).sum(1)))
+    rowsum = res.dot(np.ones(degrees.size))
+    diag = 1.0 - rowsum
     res.setdiag(diag.flatten())
     return res
 
