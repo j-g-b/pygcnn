@@ -14,105 +14,65 @@ mnist_graph = nx.grid_2d_graph(pic_size, pic_size)
 coord_map = {mnist_graph.nodes()[i]: mnist_graph.nodes()[i][0]*pic_size + mnist_graph.nodes()[i][1] for i in range(len(mnist_graph.nodes()))}
 mnist_graph = nx.relabel_nodes(mnist_graph, coord_map)
 
-# for node in mnist_graph.nodes():
-# 	tl = node - pic_size - 1
-# 	tr = node - pic_size + 1
-# 	bl = node + pic_size - 1
-# 	br = node + pic_size + 1
-# 	nodes_to_add = [node]
-# 	if tl >= 0 and not node%pic_size == 0:
-# 		nodes_to_add.append(tl)
-# 	if tr >= 0 and not node%pic_size == (pic_size-1):
-# 		nodes_to_add.append(tr)
-# 	if bl < pic_size**2 and not node%pic_size == 0:
-# 		nodes_to_add.append(bl)
-# 	if br < pic_size**2 and not node%pic_size == (pic_size-1):
-# 		nodes_to_add.append(br)
-# 	mnist_graph.add_star(nodes_to_add)
+for node in mnist_graph.nodes():
+	tl = node - pic_size - 1
+	tr = node - pic_size + 1
+	bl = node + pic_size - 1
+	br = node + pic_size + 1
+	nodes_to_add = [node]
+	if tl >= 0 and not node%pic_size == 0:
+		nodes_to_add.append(tl)
+	if tr >= 0 and not node%pic_size == (pic_size-1):
+		nodes_to_add.append(tr)
+	if bl < pic_size**2 and not node%pic_size == 0:
+		nodes_to_add.append(bl)
+	if br < pic_size**2 and not node%pic_size == (pic_size-1):
+		nodes_to_add.append(br)
+	mnist_graph.add_star(nodes_to_add)
 
 mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
-n_node_features = 1
-batch_size = 50
-n_timepoints = 16
-graph_hidden_layer_size = 32
-filter_size = 25
-n_filter_features = 32
-hidden_layer_size = 1024
-keep_prob = 1.0
-learning_rate = 1e-3
+# Make MNIST dataset
+mnist_data = Dataset('MNIST', np.expand_dims(mnist.train.images, 2), mnist.train.labels, 0.1)
 
-edge_weights = [np.array([0.3, 0.3])]
-keep_prob_ph = tf.placeholder(tf.float32)
+dataset_params = { \
 
-filter_shape = [[filter_size, n_filter_features, n_node_features]]
+	'dataset': mnist_data \
 
-# Placeholders
-picture_x = tf.placeholder("float32", shape=(batch_size, 784))
-picture_y = tf.placeholder("float32", shape=(batch_size, 10))
+}
 
-Convolve1 = GraphConvolution(name='first_conv', G=mnist_graph, n_layers=1, filter_shape=filter_shape, partition_resolution=[0], n_timepoints=n_timepoints, edge_weights=edge_weights, act_fun=tf.nn.elu)
-conv_output = Convolve1(tf.expand_dims(picture_x, 2))
-convolved_features = tf.reshape(conv_output, [-1, conv_output.get_shape().as_list()[1]*conv_output.get_shape().as_list()[2]])
-OutputMLP = MLP(name='dense_output', dims=[[convolved_features.get_shape().as_list()[1], hidden_layer_size], [hidden_layer_size, 10]], output_fun=tf.identity, dropout=[0, 1 - keep_prob_ph])
-yhat = OutputMLP(convolved_features)
+graph_params = { \
 
-prediction = tf.argmax(yhat, axis=1)
-cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=picture_y, logits=yhat))
-updates = tf.train.AdamOptimizer().minimize(cost)
-accuracy = tf.reduce_mean(tf.cast(tf.equal(prediction, tf.argmax(picture_y, axis=1)), tf.float32))
+	'G': mnist_graph, \
+	'depth': 2 \
+}
 
-sess = tf.Session()
-sess.run(tf.global_variables_initializer())
+mlp_params = { \
 
-loss = []
-test_loss = []
-plt.ion()
-fig = plt.figure()
-init_filter_weights = Convolve1.filter_weights[0].eval(session=sess).flatten()
-init_index_weights = Convolve1.indexing_mlp[0].layers[0].weights.eval(session=sess).flatten()
-for i in range(1000):
-	picture_batch = mnist.train.next_batch(batch_size)
-	picture_val_batch = mnist.validation.next_batch(batch_size)
-	pictures = picture_batch[0]
-	sess.run(updates, feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: keep_prob})
-	predict = sess.run(prediction, feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: keep_prob})
-	if i % 100 == 0:
-		acc = sess.run(accuracy, feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0})
-		loss.append(sess.run(cost, feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0}))
-		test_loss.append(sess.run(cost, feed_dict={picture_x: picture_val_batch[0], picture_y: picture_val_batch[1], keep_prob_ph: 1.0}))
-		test_acc = sess.run(accuracy, feed_dict={picture_x: picture_val_batch[0], picture_y: picture_val_batch[1], keep_prob_ph: 1.0})
-		print "Accuracy: " + str(acc) + " Test accuracy: " + str(test_acc)
-		first_layer_activation = sess.run(Convolve1.activation[0], feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0})
-		plt.clf()
-		plotNNFilter(first_layer_activation, sess.run(Convolve1.filter_weights[0], feed_dict={picture_x: pictures, picture_y: picture_batch[1], keep_prob_ph: 1.0}))
-		plt.pause(0.01)
-		plt.clf()
-		draw_neighborhood(Convolve1, 0, sess, fig, steps=2)
-		plt.pause(0.01)
-		fig.clf()
-		plt.clf()
-		draw_neighborhood(Convolve1, 4, sess, fig, steps=2)
-		plt.pause(0.01)
-		fig.clf()
-		plt.clf()
-		draw_neighborhood(Convolve1, 23, sess, fig, steps=2, highlight=24)
-		plt.pause(0.01)
-		fig.clf()
-		plt.clf()
-		draw_neighborhood(Convolve1, 123, sess, fig, steps=2, highlight=124)
-		plt.pause(0.01)
-		fig.clf()
-		plt.clf()
-		draw_neighborhood(Convolve1, 79, sess, fig, steps=2, highlight=81)
-		plt.pause(0.01)
-		fig.clf()
+	'batch_size': 50, \
+	'n_node_features': 1, \
+	'n_target_features': 10, \
+	'signal_time': 16, \
+	'index_hidden': 32, \
+	'n_layers': 1, \
+	'filter_shape': [[25, 32, 1]], \
+	'mlp_hidden': 512, \
+	'act_fun': [tf.nn.elu] \
 
-test_accuracy = []
-for i in range(100):
-	picture_test_batch = mnist.test.next_batch(batch_size)
-	pictures = picture_test_batch[0]
-	acc = sess.run(accuracy, feed_dict={picture_x: pictures, picture_y: picture_test_batch[1], keep_prob_ph: 1.0})
-	test_accuracy.append(acc)
-	print acc
-print "Final test accuracy: " + str(np.mean(np.array(test_accuracy)))
+}
+
+def mnist_loss(true, pred):
+	return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=true, logits=pred))
+
+learning_params = { \
+
+	'cost_function': mnist_loss, \
+	'optimizer': tf.train.AdamOptimizer, \
+	'learning_rate': 1e-3 \
+	
+}
+
+gNet = GraphNetwork('MNIST', dataset_params, graph_params, mlp_params, learning_params, orientation='graph')
+
+for i in range(8000):
+	gNet.train()

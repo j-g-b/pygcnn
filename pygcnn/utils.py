@@ -8,6 +8,34 @@ from scipy.stats.stats import pearsonr
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_regression
 
+def load_citeseer(data_fname, graph_fname):
+	X, Y, sample_names = parse_citeseer_data(data_fname)
+	citeseer_graph = parse_citeseer_graph(graph_fname)
+	citeseer_graph = nx.relabel_nodes(citeseer_graph, {sample_names[i]: i for i in range(len(sample_names))})
+	citeseer_graph = nx.subgraph(citeseer_graph, range(X.shape[0]))
+	return X, Y, citeseer_graph
+
+def parse_citeseer_graph(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	split_lines = [line.strip("\n").split("\t") for line in lines]
+	return nx.from_edgelist(split_lines)
+
+def parse_citeseer_data(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	split_lines = [line.split("\t") for line in lines]
+	dataset = [[line[0], line[-1].strip("\n"), np.array(line[1:(len(line)-2)], dtype="float32")] for line in split_lines]
+	classes = np.array(['Agents', 'AI', 'DB', 'IR', 'ML', 'HCI'])
+	binary_classes = np.identity(len(classes))
+	X = np.concatenate([np.reshape(sample[2], (1, sample[2].size)) for sample in dataset])
+	Y = np.concatenate([np.reshape(binary_classes[np.where(classes == sample[1])], (1, len(classes))) for sample in dataset])
+	sample_names = [sample[0] for sample in dataset]
+	return X, Y, sample_names
+
+def translate_array(arr, translate_dict):
+	return np.vectorize(translate_dict.__getitem__)(arr)
+
 def evaluate_gradient(loss, tensor_list, session, feed_dict):
 	grad_list = tf.gradients(loss, tensor_list)
 	eval_grad_list = []
