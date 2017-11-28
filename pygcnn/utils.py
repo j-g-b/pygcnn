@@ -8,6 +8,76 @@ from scipy.stats.stats import pearsonr
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_regression
 
+def load_pubmed(data_fname, graph_fname):
+	X, Y, sample_names = parse_pubmed_data(data_fname)
+	pubmed_graph = parse_pubmed_graph(graph_fname)
+	pubmed_graph = nx.relabel_nodes(pubmed_graph, {sample_names[i]: i for i in range(len(sample_names))})
+	pubmed_graph = nx.subgraph(pubmed_graph, range(X.shape[0]))
+	return X, Y, pubmed_graph
+
+def parse_pubmed_graph(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	split_lines = [line.strip("\n").split("\t") for line in lines[2:len(lines)]]
+	edge_list = [[sl[1].strip('paper:'), sl[3].strip('paper:')] for sl in split_lines]
+	return nx.from_edgelist(edge_list)
+
+def parse_pubmed_data(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	split_lines = [line.split("\t") for line in lines[2:len(lines)]]
+	dataset = []
+	word_dict = {}
+	word_counter = 0
+	for line in split_lines:
+		word_vec = line[2:(len(line)-1)]
+		for word in word_vec:
+			strip_word = word.split('=')[0]
+			if not strip_word in word_dict.values():
+				word_dict[word_counter] = strip_word
+				word_counter = word_counter + 1
+		dataset.append([line[0], line[1].strip('label='), word_vec])
+	inv_word_dict = {word_dict[word_dict.keys()[i]]: word_dict.keys()[i] for i in range(len(word_dict.keys()))}
+	for i in range(len(dataset)):
+		feature_arr = len(word_dict.keys())*[0]
+		word_vec = dataset[i][2]
+		for j in range(len(word_vec)):
+			strip_word = word_vec[j].split('=')[0]
+			value = word_vec[j].split('=')[1]
+			feature_arr[inv_word_dict[strip_word]] = value
+		dataset[i][2] = np.array(feature_arr, dtype='float32')
+	classes = np.array(['1', '2', '3'])
+	binary_classes = np.identity(len(classes))
+	X = np.concatenate([np.reshape(sample[2], (1, sample[2].size)) for sample in dataset])
+	Y = np.concatenate([np.reshape(binary_classes[np.where(classes == sample[1])], (1, len(classes))) for sample in dataset])
+	sample_names = [sample[0] for sample in dataset]
+	return X, Y, sample_names
+
+def load_cora(data_fname, graph_fname):
+	X, Y, sample_names = parse_cora_data(data_fname)
+	cora_graph = parse_cora_graph(graph_fname)
+	cora_graph = nx.relabel_nodes(cora_graph, {sample_names[i]: i for i in range(len(sample_names))})
+	cora_graph = nx.subgraph(cora_graph, range(X.shape[0]))
+	return X, Y, cora_graph
+
+def parse_cora_graph(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	split_lines = [line.strip("\n").split("\t") for line in lines]
+	return nx.from_edgelist(split_lines)
+
+def parse_cora_data(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	split_lines = [line.split("\t") for line in lines]
+	dataset = [[line[0], line[-1].strip("\n"), np.array(line[1:(len(line)-2)], dtype="float32")] for line in split_lines]
+	classes = np.array(['Case_Based', 'Genetic_Algorithms', 'Neural_Networks', 'Probabilistic_Methods', 'Reinforcement_Learning', 'Rule_Learning', 'Theory'])
+	binary_classes = np.identity(len(classes))
+	X = np.concatenate([np.reshape(sample[2], (1, sample[2].size)) for sample in dataset])
+	Y = np.concatenate([np.reshape(binary_classes[np.where(classes == sample[1])], (1, len(classes))) for sample in dataset])
+	sample_names = [sample[0] for sample in dataset]
+	return X, Y, sample_names
+
 def load_citeseer(data_fname, graph_fname):
 	X, Y, sample_names = parse_citeseer_data(data_fname)
 	citeseer_graph = parse_citeseer_graph(graph_fname)

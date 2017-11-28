@@ -5,13 +5,19 @@ from sklearn.model_selection import train_test_split
 from pygcnn.utils import *
 import math
 
+def tf_scatter_and_scale(output):
+    scatter = tf.nn.softmax(output[:, :-1])
+    scale = tf.expand_dims(tf.nn.sigmoid(output[:, -1]), 1)
+    return tf.multiply(scale, scatter)
+
 def tf_init_weights(shape):
-    """ Weight initialization """
-    weights = tf.random_normal(shape, stddev=np.sqrt(2.0 / shape[0]))
+    """Glorot & Bengio (AISTATS 2010) init."""
+    init_range = np.sqrt(6.0/(shape[0]+shape[1]))
+    weights = tf.random_uniform(shape, minval=-init_range, maxval=init_range, dtype=tf.float32)
     return tf.Variable(weights)
 
 def tf_init_bias(shape):
-    """ Bias initialization """
+    """Bias init."""
     bias = tf.abs(tf.random_normal(shape, stddev=0.01))
     return tf.Variable(bias)
 
@@ -27,18 +33,18 @@ def tf_index_node(graph, node, edge_weights, n_timepoints, mlp):
 	return indexer_output, d_neighborhood
 
 def index_graph(graph, edge_weights, n_timepoints):
-	subgraph_features = []
-	neighborhoods = []
-	for node in graph.nodes():
-		d_neighborhood = make_neighborhood(graph, node, edge_weights)
-		A = normalized_adj(d_neighborhood)
-		x = np.zeros((A.shape[0], 1))
-		for j in range(x.size):
-			if d_neighborhood.nodes()[j] == node:
-				x[j] = 1.0
-		subgraph_features.append(propagate(x, A, n_timepoints - 1))
-		neighborhoods.append(d_neighborhood.nodes())
-	return subgraph_features, neighborhoods
+    subgraph_features = []
+    neighborhoods = []
+    for node in graph.nodes():
+        d_neighborhood = make_neighborhood(graph, node, edge_weights)
+        A = normalized_adj(d_neighborhood)
+        x = np.zeros((A.shape[0], 1))
+        for j in range(x.size):
+            if d_neighborhood.nodes()[j] == node:
+                x[j] = 1.0
+        subgraph_features.append(propagate(x, A, n_timepoints - 1))
+        neighborhoods.append(d_neighborhood.nodes())
+    return subgraph_features, neighborhoods
 
 def plotNNFilter(units, weights):
     filters = units.shape[2]

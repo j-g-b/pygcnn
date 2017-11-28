@@ -8,17 +8,25 @@ from pygcnn.utils import *
 from pygcnn.indexing import *
 
 class Dataset(object):
-	def __init__(self, name, features, targets, test_size):
+	def __init__(self, name, features, targets, test_size=None, split=None):
 		assert features.shape[0] == targets.shape[0]
 		self.name = name
 		self.features = features
 		self.targets = targets
 		self.test_size = test_size
 		self.sample_ids = np.reshape(np.arange(features.shape[0]), (-1,1))
-		if self.test_size != 0:
-			self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size)
+		if split is None:
+			if self.test_size is not None:
+				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size)
+			else:
+				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = features, np.copy(features), targets, np.copy(targets), np.copy(self.sample_ids), np.copy(self.sample_ids)
 		else:
-			self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = features, np.copy(features), targets, np.copy(targets), np.copy(self.sample_ids), np.copy(self.sample_ids)
+			self.train_x = np.take(features, split[0], axis=0)
+			self.train_y = np.take(targets, split[0], axis=0)
+			self.test_x = np.take(features, split[1], axis=0)
+			self.test_y = np.take(targets, split[1], axis=0)
+			self.train_ids = split[0]
+			self.test_ids = split[1]
 		self.train_batch_indx = 0
 		self.train_indices = np.random.permutation(self.train_x.shape[0])
 		self.test_batch_indx = 0
@@ -27,7 +35,7 @@ class Dataset(object):
 		# returns tuple containing:
 		# 	0: batch of X data with `batch_size` rows
 		#	1: batch of Y data with `batch_size` rows
-		#	2: indices of self.train_x and self.train_y contained within batch
+		#	2: indices of self.features and self.targets contained within batch
 		next_x_batch = []
 		next_y_batch = []
 		next_id_batch = []
@@ -44,7 +52,7 @@ class Dataset(object):
 		# returns tuple containing:
 		# 	0: batch of X data with `batch_size` rows
 		#	1: batch of Y data with `batch_size` rows
-		#	2: indices of self.train_x and self.train_y contained within batch
+		#	2: indices of self.features and self.targets contained within batch
 		next_x_batch = []
 		next_y_batch = []
 		next_id_batch = []
@@ -89,7 +97,7 @@ class MLP(object):
 		return output
 
 class GraphConvolution(object):
-	def __init__(self, name, filter_shape, n_layers=1, act_fun=[tf.nn.elu], index_dims=[20, 10]):	
+	def __init__(self, name, filter_shape, n_layers=1, act_fun=[tf.nn.elu], index_dims=[20, 10], dropout=[0.5]):	
 		# filter shape should be (filter_size, n_filter_output_features, n_node_features)
 		self.name = name
 		self.n_layers = n_layers
@@ -99,11 +107,13 @@ class GraphConvolution(object):
 		self.filter_weights = []
 		self.filter_bias = []
 		self.indexing_mlp = []
+		self.dropout = dropout
+		self.reduce_weights = []
 		# Set up convolutional layers with induced graphs
 		for i in range(n_layers):
 			self.indexing_mlp.append(MLP(name=name + '_indexing_mlp_' + str(i), dims=[[index_dims[0], index_dims[1]], [index_dims[1], filter_shape[i][0]]], act_fun=[tf.nn.elu], dropout=[0,0], output_fun=tf.nn.softmax))
 			self.filter_shape.append(filter_shape[i])
-			self.filter_weights.append(tf_init_weights(shape=filter_shape[i]))
+			self.filter_weights.append(tf_init_weights(shape=[(filter_shape[i][0]*filter_shape[i][2]), filter_shape[i][1]]))
 			self.filter_bias.append(tf_init_bias(shape=[filter_shape[i][1]]))
 	def __call__(self, inputs, n_nodes, subgraph_features, neighborhoods, neighborhood_sizes, graph_feature_padder):
 		# assumes that all input matrices are Tensorflow Tensors
@@ -116,7 +126,7 @@ class GraphConvolution(object):
 			X_neighborhood = tf.gather(tf.concat([X, tf.zeros([1, X.get_shape().as_list()[1], X.get_shape().as_list()[2]])], axis=0), neighborhoods[i])
 			X_neighborhood = tf.reshape(X_neighborhood, shape=[n_nodes[i], max(neighborhood_sizes[i]), self.filter_shape[i][2], -1])
 			indexed_features = tf.matmul(tf.tile(tf.expand_dims(tf.transpose(indexer_output, perm=[0,2,1]), 0), [self.filter_shape[i][2], 1, 1, 1]), tf.transpose(X_neighborhood, perm=[2,0,1,3]))
-			convolved_signal = self.act_fun[i](tf.matmul(tf.reshape(tf.transpose(indexed_features, perm=[3,1,2,0]), shape=[X.get_shape().as_list()[2], -1, self.filter_shape[i][0]*self.filter_shape[i][2]]), tf.tile(tf.expand_dims(tf.transpose(tf.reshape(self.filter_weights[i], shape=[self.filter_shape[i][1], -1])), 0), [X.get_shape().as_list()[2], 1, 1])))
+			convolved_signal = self.act_fun[i](tf.matmul(tf.nn.dropout(tf.reshape(tf.transpose(indexed_features, perm=[3,1,2,0]), shape=[X.get_shape().as_list()[2], -1, self.filter_shape[i][0]*self.filter_shape[i][2]]), 1 - self.dropout[i]), tf.tile(tf.expand_dims(tf.transpose(tf.reshape(self.filter_weights[i], shape=[self.filter_shape[i][1], -1])), 0), [X.get_shape().as_list()[2], 1, 1])) + self.filter_bias[i])
 			self.activation.append(convolved_signal)
 			convolved_signal = tf.transpose(convolved_signal, perm=[1,2,0])
 			X = convolved_signal
@@ -178,14 +188,16 @@ class GraphNetwork(object):
 			self.Xph = tf.placeholder("float32", shape=(mlp_params['batch_size'], len(graph_params['G'].nodes()), mlp_params['n_node_features']))
 			self.Yph = tf.placeholder("float32", shape=(mlp_params['batch_size'], mlp_params['n_target_features']))
 			self.node_batch_size = None
-			self.dropout = tf.placeholder("float32")
+			self.dropout = tf.placeholder(tf.float32)
+			self.filter_dropout = tf.placeholder(tf.float32)
 		if orientation == 'node':
 			self.Xph = tf.placeholder("float32", shape=(1, None, mlp_params['n_node_features']))
 			self.Yph = tf.placeholder("float32", shape=(mlp_params['batch_size'], mlp_params['n_target_features']))
 			self.dropout = tf.placeholder(tf.float32)
+			self.filter_dropout = tf.placeholder(tf.float32)
 			self.node_batch_size = mlp_params['batch_size']
 		print "Initializing graph convolution..."
-		self.GC = GraphConvolution(name=name + '_gc', filter_shape=mlp_params['filter_shape'], n_layers=mlp_params['n_layers'], act_fun=mlp_params['act_fun'], index_dims=[mlp_params['signal_time'], mlp_params['index_hidden']])
+		self.GC = GraphConvolution(name=name + '_gc', filter_shape=mlp_params['filter_shape'], n_layers=mlp_params['n_layers'], act_fun=mlp_params['act_fun'], index_dims=[mlp_params['signal_time'], mlp_params['index_hidden']], dropout=[self.filter_dropout])
 		print "Initializing taN..."
 		self.TAN = taN(G=graph_params['G'], GC=self.GC, depth=graph_params['depth'])
 		print "Running taN..."
@@ -195,7 +207,7 @@ class GraphNetwork(object):
 			mlp_input_size = self.TAN.output.get_shape().as_list()[1]*self.TAN.output.get_shape().as_list()[2]
 		else:
 			mlp_input_size = self.TAN.output.get_shape().as_list()[0]*self.TAN.output.get_shape().as_list()[2]
-		self.MLP = MLP(name=name + '_mlp', dims=[[mlp_input_size, mlp_params['mlp_hidden']], [mlp_params['mlp_hidden'], mlp_params['n_target_features']]], output_fun=tf.identity, dropout=[0, self.dropout])
+		self.MLP = MLP(name=name + '_mlp', dims=mlp_params['mlp_dims'], output_fun=tf.identity, dropout=len(mlp_params['mlp_dims'])*[self.dropout])
 		print "Setting output..."
 		if orientation == 'graph':
 			output = tf.reshape(self.TAN.output, shape=[self.TAN.output.get_shape().as_list()[0], -1])
@@ -204,6 +216,13 @@ class GraphNetwork(object):
 		self.prediction = self.MLP(output)
 		print "Initializing optimizer..."
 		self.cost = learning_params['cost_function'](self.Yph, self.prediction)
+		if 'l2_lambda' in learning_params.keys():
+			for i in range(self.TAN.n_layers):
+				self.cost += learning_params['l2_lambda']*tf.nn.l2_loss(self.TAN.GC.filter_weights[i])
+				for j in range(len(self.TAN.GC.indexing_mlp[i].dims)):
+					self.cost += learning_params['l2_lambda']*tf.nn.l2_loss(self.TAN.GC.indexing_mlp[i].layers[j].weights)
+			for i in range(len(self.MLP.dims)):
+				self.cost += learning_params['l2_lambda']*tf.nn.l2_loss(self.MLP.layers[i].weights)
 		self.update = learning_params['optimizer'](learning_params['learning_rate']).minimize(self.cost)
 		print "Initializing Tensorflow session and variables..."
 		self.session = tf.Session()
@@ -228,32 +247,35 @@ class GraphNetwork(object):
 			subgraph_features = np.concatenate([np.concatenate([subgraph_features[k], subgraph_feature_zero_pad[k]], axis=0) for k in range(self.mlp_params['batch_size'])], axis=0)
 			graph_feature_padder = np.stack([range(k*max_neighborhood_size, k*max_neighborhood_size + neighborhood_sizes[k]) + [subgraph_features.shape[0]]*(max_neighborhood_size-neighborhood_sizes[k]) for k in range(self.mlp_params['batch_size'])], axis=0)
 			if mode == 'train':
-				self.session.run(self.update,
+				self.session.run(self.update, \
 								feed_dict={self.Xph: X, \
 									 		self.Yph: batch[1], \
-								 			self.TAN.NBph[0]: translate_array(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten(), translate_nb_dict),
-								 			self.TAN.GFph[0]: graph_feature_padder.flatten(),
-								 			self.TAN.SGph[0]: subgraph_features,
-								 			self.dropout: 0.5})
-			iter_cost, iter_acc = self.session.run([self.cost, tf.reduce_mean(tf.cast(tf.equal(tf.argmax(self.prediction, axis=1), tf.argmax(self.Yph, axis=1)), tf.float32))], 
+								 			self.TAN.NBph[0]: translate_array(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten(), translate_nb_dict), \
+								 			self.TAN.GFph[0]: graph_feature_padder.flatten(), \
+								 			self.TAN.SGph[0]: subgraph_features, \
+								 			self.dropout: 0.5,
+								 			self.filter_dropout: 0.5})
+			iter_cost, iter_acc = self.session.run([self.cost, tf.reduce_mean(tf.cast(tf.equal(tf.argmax(self.prediction, axis=1), tf.argmax(self.Yph, axis=1)), tf.float32))], \
 							feed_dict={self.Xph: X, \
 								 		self.Yph: batch[1], \
-								 		self.TAN.NBph[0]: translate_array(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten(), translate_nb_dict),
+								 		self.TAN.NBph[0]: translate_array(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten(), translate_nb_dict), \
 								 		self.TAN.GFph[0]: graph_feature_padder.flatten(), \
-								 		self.TAN.SGph[0]: subgraph_features,
-								 		self.dropout: 0})
+								 		self.TAN.SGph[0]: subgraph_features, \
+								 		self.dropout: 0, \
+								 		self.filter_dropout: 0})
 		else:
-			self.session.run(self.update, 
+			if mode == 'train':
+				self.session.run(self.update, \
+								feed_dict={self.Xph: batch[0], \
+								 			self.Yph: batch[1], \
+								 			self.dropout: 0,
+								 			self.filter_dropout: 0})
+			iter_cost, iter_acc = self.session.run([self.cost, tf.reduce_mean(tf.cast(tf.equal(tf.argmax(self.prediction, axis=1), tf.argmax(self.Yph, axis=1)), tf.float32))], \
 							feed_dict={self.Xph: batch[0], \
-								 		self.Yph: batch[1],
-								 		self.dropout: 0.5})
-			iter_cost, iter_acc = self.session.run([self.cost, tf.reduce_mean(tf.cast(tf.equal(tf.argmax(self.prediction, axis=1), tf.argmax(self.Yph, axis=1)), tf.float32))], 
-							feed_dict={self.Xph: batch[0], \
-								 		self.Yph: batch[1],
-								 		self.dropout: 0})
-		print "Ran " + mode + " update!"
-		print "Cost was: " + str(iter_cost)
-		print "Accuracy was: " + str(iter_acc)
+								 		self.Yph: batch[1], \
+								 		self.dropout: 0, \
+								 		self.filter_dropout: 0})
+		return iter_cost, iter_acc
 
 
 

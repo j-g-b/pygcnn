@@ -56,7 +56,7 @@ mlp_params = { \
 	'index_hidden': 32, \
 	'n_layers': 1, \
 	'filter_shape': [[25, 32, 1]], \
-	'mlp_hidden': 512, \
+	'mlp_dims': [[32*784, 1024], [1024, 10]], \
 	'act_fun': [tf.nn.elu] \
 
 }
@@ -74,5 +74,15 @@ learning_params = { \
 
 gNet = GraphNetwork('MNIST', dataset_params, graph_params, mlp_params, learning_params, orientation='graph')
 
+acc_arr = []
 for i in range(8000):
-	gNet.train()
+	tr_cost, tr_acc = gNet.run('train')
+	acc_arr.append(tr_acc)
+	if i % 100 == 0:
+		avg_acc = 0
+		for j in range(1):
+			cost, acc = gNet.run('test')
+			avg_acc += acc
+		print "\nAverage test accuracy: " + str(avg_acc)
+		print "Average train accuracy: " + str(np.mean(np.array(acc_arr)))
+		acc_arr = []
