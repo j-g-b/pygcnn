@@ -8,6 +8,23 @@ from scipy.stats.stats import pearsonr
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_regression
 
+def sigmoid(x):
+	return (1.0 / (1.0 + np.exp(-x)))
+
+def row_normalize(X):
+	for i in range(X.shape[0]):
+		rowsum = np.sum(np.absolute(X[i, :]))
+		if rowsum > 0:
+			X[i, :] = X[i, :] / rowsum
+
+def parse_gene_graph(fname):
+	with open(fname) as f:
+		lines = f.readlines()
+	header = lines[0]
+	split_lines = [line.strip("\n").split("\t") for line in lines[1:len(lines)]]
+	edge_list = [(sl[0], sl[1], {'direction': sl[3], 'score': float(sl[4])}) for sl in split_lines]
+	return nx.from_edgelist(edge_list)
+
 def load_pubmed(data_fname, graph_fname):
 	X, Y, sample_names = parse_pubmed_data(data_fname)
 	pubmed_graph = parse_pubmed_graph(graph_fname)
@@ -180,16 +197,6 @@ def find_similar_genes(similarity, query_genes, query_genes_ph, session, gene2in
 			log_str = '%s %s,' % (log_str, close_gene + " (" + close_dist + ")")
 		print(log_str)
 
-def select_k_best(features, targets, k):
-	selected_features = {}
-	feature_names = np.array(list(features))
-	for target in list(targets):
-		print "\r" + target
-		y = targets[target].as_matrix()
-		k_best = SelectKBest(f_regression, k=k).fit(features.as_matrix(), y)
-		selected_features[target] = feature_names[np.where(k_best.get_support())]
-	return selected_features
-
 def sp_matrix_from_msigdb_dict(msig_dict):
 	gene_sets = list(set(msig_dict.keys()))
 	genes = list(set([item for sublist in msig_dict.values() for item in sublist]))
@@ -214,35 +221,6 @@ def dict_from_msigdb(msig_filename, max_size):
 			gene_set_dict[split_line[0]] = line[0:-1].split("\t")[2:]
 	return gene_set_dict
 
-def marginal_correlation_screening(features, targets, top_n=10):
-	top_mat = np.zeros((targets.shape[1], top_n))
-	for target in range(targets.shape[1]):
-		print "Screening target " + str(target)
-		m_cors = [pearsonr(features[:, i], targets[:, target])[0] for i in range(features.shape[1])]
-		top_mat[target, :] = np.argsort(np.array(m_cors))[-top_n:]
-	return top_mat
-
-def maximum_marginal_diversity(features, targets, class_labels, class_priors, top_n=10):
-	top_mat = np.zeros((targets.shape[1], top_n))
-	for target in range(targets.shape[1]):
-		md_features = []
-		for feature in range(features.shape[1]):
-			md = marginal_diversity(features[:, feature], targets[:, target], class_labels, class_priors)
-			md_features.append(md)
-		top_mat[target, :] = np.argsort(np.array(md_features))[-top_n:]
-	return top_mat
-
-def marginal_diversity(feature, target, class_labels, class_priors):
-	h, e = np.histogram(feature, bins='auto', density=True)
-	hist_mat = np.zeros((h.shape[0], len(class_labels)))
-	for label in class_labels:
-		hist_mat[:, label], temp = np.histogram(feature[np.where(target == label)], bins=e, density=True)
-	hist_mat = hist_mat + np.abs(1e-4*np.random.randn(hist_mat.shape[0], hist_mat.shape[1]))
-	h_m = np.mean(hist_mat, axis=1)
-	h_m = np.diag(1.0 / h_m)
-	md = np.dot(class_priors, np.dot(np.transpose(hist_mat), np.log(np.dot(h_m, hist_mat))).diagonal())
-	return md
-
 def tf_task_mask(shape, soft_sharing):
 	assert shape[0] > shape[1]
 	# note: requires more input weights than output tasks
@@ -256,49 +234,37 @@ def tf_task_mask(shape, soft_sharing):
 	task_mask[range(row_counter, shape[0]), :] = 1
 	return tf.constant(task_mask)
 
-def graph_from_data(data, dist_fun=np.corrcoef, d=4):
-	dist_mat = dist_fun(data)
-	np.fill_diagonal(dist_mat, 0.0)
-	closest_indices = np.concatenate((np.argsort(dist_mat)[:, -d:], np.argsort(dist_mat)[:,0:d]), axis=1)
-	graph_dict = {indx: list(closest_indices[indx, :]) for indx in range(closest_indices.shape[0])}
-	graph = nx.from_dict_of_lists(graph_dict)
-	for edge in graph.edges():
-		graph.edge[edge[0]][edge[1]]['weight'] = dist_mat[edge[0], edge[1]]
-	return graph
-
-def make_neighborhood(graph, node_id, weights):
-	d_neighbors = neighborhood(graph, node_id, weights.size)
+def make_neighborhood(graph, node_id, depth, edge_weight_fun):
+	d_neighbors = neighborhood(graph, node_id, depth)
 	subgraph = nx.Graph(graph.subgraph(d_neighbors))
-	set_edge_weights(subgraph, node_id, weights)
+	edge_weight_fun(subgraph, node_id)
 	return subgraph
 
-def set_edge_weights(subgraph, node_id, weights):
-	to_visit = [node_id, subgraph.neighbors(node_id)]
-	visited = [node_id]
-	subgraph.node[node_id]['visited_by'] = [node_id]
-	subgraph.node[node_id]['depth'] = 0
-	edges_to_prune = []
-	while to_visit:
-		parent_node = to_visit.pop(0)
-		child_nodes = to_visit.pop(0)
-		for child_node in child_nodes:
-			if not child_node in visited:
-				to_visit.append(child_node)
-				to_visit.append(subgraph.neighbors(child_node))
-				subgraph.node[child_node]['visited_by'] = [parent_node]
-				subgraph.node[parent_node]['visited_by'].append(child_node)
-				subgraph.node[child_node]['depth'] = subgraph.node[parent_node]['depth'] + 1
-				subgraph.edge[parent_node][child_node]['weight'] = weights[subgraph.node[parent_node]['depth']]
-				visited.append(child_node)
-			elif not parent_node in subgraph.node[child_node]['visited_by']:
-				min_depth = min(subgraph.node[parent_node]['depth'], subgraph.node[child_node]['depth'])
-				if not min_depth == weights.size:
-					subgraph.node[child_node]['visited_by'].append(parent_node)
-					subgraph.node[parent_node]['visited_by'].append(child_node)
-					subgraph.edge[parent_node][child_node]['weight'] = weights[min_depth]
-				else:
-					edges_to_prune.append((parent_node, child_node))
-	subgraph.remove_edges_from(edges_to_prune)
+def mnist_edge_fun(subgraph, node_id):
+	for e in subgraph.edges_iter(data=True):
+		edge_vec = np.abs(np.array([((e[0]%28) - (e[1]%28)), ((e[0]/28) - (e[1]/28))]))
+		edge_vec = edge_vec / np.sqrt(np.sum(np.power(edge_vec, 2)))
+		weight = edge_vec[0]
+		if (((e[0] + e[1])/2.0) % 28) < (node_id % 28):
+			weight = -weight
+		elif (((e[0] + e[1])/2.0) / 28) > (node_id / 28):
+			weight = -weight
+		if weight >= 0:
+			e[2]['weight'] = (1 / (1 + np.exp(-weight)))
+		else:
+			e[2]['weight'] = (1 / (1 + np.exp(-weight))) - 1
+
+def gene_edge_fun(subgraph, node_id):
+	directions = {'-': 0, '<-': -1, \
+				  '|-': -0.5, '->': 1, \
+				  '-|': 0.5, '<->': 0, \
+				  '<-|': 0.25, '|->': -0.25, '|-|': 0}
+	for e in subgraph.edges_iter(data=True):
+		weight = directions[e[2]['direction']]
+		if weight >= 0:
+			e[2]['weight'] = 1 / (1 + np.exp(-weight))
+		else:
+			e[2]['weight'] = (1 / (1 + np.exp(-weight))) - 1
 
 
 def neighborhood(graph, node_id, max_depth):
@@ -315,16 +281,18 @@ def neighborhood(graph, node_id, max_depth):
 					d_neighbors.append(child_node)
 	return d_neighbors
 
-def normalized_adj(subgraph, weight='None', alpha=0.5):
+def normalized_adj(subgraph, alpha=1.0):
     degrees = np.array([subgraph.degree(node) for node in subgraph.nodes()])
-    d_inv = np.power(degrees, -1.0).flatten()
-    d_inv[np.isinf(d_inv)] = 0.
-    d_mat_inv = sp.diags(d_inv)
-    weighted_adj = nx.adjacency_matrix(subgraph)
-    res = d_mat_inv.dot(weighted_adj).tocoo()
-    rowsum = res.dot(np.ones(degrees.size))
-    diag = 1.0 - rowsum
+    weighted_adj = nx.to_scipy_sparse_matrix(subgraph, format='lil')
+    res = weighted_adj
+    rowsum = np.absolute(res).dot(np.ones(degrees.size))
+    diag = rowsum / alpha
     res.setdiag(diag.flatten())
+    rowsum = np.absolute(res).dot(np.ones(degrees.size))
+    rowsum_inv = np.power(rowsum, -1.0).flatten()
+    rowsum_inv[np.isinf(rowsum_inv)] = 0.
+    rowsum_mat_inv = sp.diags(rowsum_inv)
+    res = rowsum_mat_inv.dot(res)
     return res
 
 def autolabel(bars):

@@ -8,16 +8,19 @@ from pygcnn.utils import *
 from pygcnn.indexing import *
 
 class Dataset(object):
-	def __init__(self, name, features, targets, test_size=None, split=None):
+	def __init__(self, name, features, targets, test_size=None, split=None, stratify=None):
 		assert features.shape[0] == targets.shape[0]
 		self.name = name
+		self.epoch = 0
 		self.features = features
 		self.targets = targets
 		self.test_size = test_size
 		self.sample_ids = np.reshape(np.arange(features.shape[0]), (-1,1))
 		if split is None:
 			if self.test_size is not None:
-				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size)
+				if stratify:
+					stratify = targets
+				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size, stratify=stratify)
 			else:
 				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = features, np.copy(features), targets, np.copy(targets), np.copy(self.sample_ids), np.copy(self.sample_ids)
 		else:
@@ -42,6 +45,7 @@ class Dataset(object):
 		for indx in range(self.train_batch_indx, self.train_batch_indx + batch_size):
 			if indx == self.train_x.shape[0]:
 				self.train_indices = np.random.permutation(self.train_x.shape[0])
+				self.epoch += 1
 			next_x_batch.append(self.train_x[self.train_indices[indx % self.train_x.shape[0]], :])
 			next_y_batch.append(self.train_y[self.train_indices[indx % self.train_x.shape[0]], :])
 			next_id_batch.append(self.train_ids[self.train_indices[indx % self.train_x.shape[0]]])
@@ -64,6 +68,13 @@ class Dataset(object):
 			next_id_batch.append(self.test_ids[self.test_indices[indx % self.test_x.shape[0]]])
 		self.test_batch_indx = (self.test_batch_indx + batch_size) % self.test_x.shape[0]
 		next_batch = (np.stack(next_x_batch, axis=0), np.stack(next_y_batch, axis=0), np.stack(next_id_batch, axis=0))
+		return next_batch
+	def batch_from_ids(self, ids):
+		# returns tuple containing:
+		# 	0: batch of X data with `ids.size` rows
+		#	1: batch of Y data with `ids.size` rows
+		#	2: indices of self.features and self.targets contained within batch
+		next_batch = (np.take(self.features, ids, axis=0), np.take(self.targets, ids, axis=0), ids)
 		return next_batch
 
 class Layer(object):
@@ -113,7 +124,7 @@ class GraphConvolution(object):
 		for i in range(n_layers):
 			self.indexing_mlp.append(MLP(name=name + '_indexing_mlp_' + str(i), dims=[[index_dims[0], index_dims[1]], [index_dims[1], filter_shape[i][0]]], act_fun=[tf.nn.elu], dropout=[0,0], output_fun=tf.nn.softmax))
 			self.filter_shape.append(filter_shape[i])
-			self.filter_weights.append(tf_init_weights(shape=[(filter_shape[i][0]*filter_shape[i][2]), filter_shape[i][1]]))
+			self.filter_weights.append(tf.reshape(tf_init_weights(shape=[(filter_shape[i][0]*filter_shape[i][2]), filter_shape[i][1]]), filter_shape[i]))
 			self.filter_bias.append(tf_init_bias(shape=[filter_shape[i][1]]))
 	def __call__(self, inputs, n_nodes, subgraph_features, neighborhoods, neighborhood_sizes, graph_feature_padder):
 		# assumes that all input matrices are Tensorflow Tensors
@@ -133,7 +144,7 @@ class GraphConvolution(object):
 		return tf.transpose(X, perm=[2,0,1])
 
 class taN(object):
-	def __init__(self, G, GC, depth=2):
+	def __init__(self, G, GC, edge_weight_fun, depth=2):
 		self.G = [G]
 		self.GC = GC
 		self.n_layers = GC.n_layers
@@ -142,11 +153,12 @@ class taN(object):
 		self.neighborhood_sizes = []
 		self.neighborhoods = []
 		self.graph_feature_padder = []
-		self.edge_weights = [np.array(depth*[0.9]) for i in range(self.n_layers)]
+		self.depth = depth
 		self.n_timepoints = GC.index_dims[0]
+		self.edge_weight_fun = edge_weight_fun
 		self.output = None
 		for i in range(self.n_layers):
-			subgraph_features, neighborhoods = index_graph(self.G[i], self.edge_weights[i], self.n_timepoints)
+			subgraph_features, neighborhoods = index_graph(self.G[i], self.depth, self.n_timepoints, self.edge_weight_fun)
 			n_nodes = len(neighborhoods)
 			neighborhood_sizes = [len(neighborhoods[k]) for k in range(len(neighborhoods))]
 			self.subgraph_features.append(subgraph_features)
@@ -154,7 +166,6 @@ class taN(object):
 			self.neighborhood_sizes.append(neighborhood_sizes)
 			self.neighborhoods.append(np.stack([neighborhoods[k] + [n_nodes]*(max(neighborhood_sizes)-neighborhood_sizes[k]) for k in range(len(neighborhoods))], axis=0))
 			self.graph_feature_padder.append(np.stack([range(sum(neighborhood_sizes[0:k]), sum(neighborhood_sizes[0:(k+1)])) + [np.concatenate(subgraph_features, axis=0).shape[0]]*(max(neighborhood_sizes)-neighborhood_sizes[k]) for k in range(len(neighborhoods))], axis=0))
-			self.edge_weights.append(self.edge_weights[i])
 	def __call__(self, inputs, node_batch_size):
 		if node_batch_size is None:
 			# First need to flatten everything
@@ -179,6 +190,8 @@ class taN(object):
 class GraphNetwork(object):
 	def __init__(self, name, dataset_params, graph_params, mlp_params, learning_params, orientation='graph'):
 		assert orientation in ['graph', 'node']
+		if 'edge_weight_fun' not in graph_params.keys():
+			graph_params['edge_weight_fun'] = lambda *args: None
 		self.dataset_params = dataset_params
 		self.graph_params = graph_params
 		self.mlp_params = mlp_params
@@ -199,7 +212,7 @@ class GraphNetwork(object):
 		print "Initializing graph convolution..."
 		self.GC = GraphConvolution(name=name + '_gc', filter_shape=mlp_params['filter_shape'], n_layers=mlp_params['n_layers'], act_fun=mlp_params['act_fun'], index_dims=[mlp_params['signal_time'], mlp_params['index_hidden']], dropout=[self.filter_dropout])
 		print "Initializing taN..."
-		self.TAN = taN(G=graph_params['G'], GC=self.GC, depth=graph_params['depth'])
+		self.TAN = taN(G=graph_params['G'], GC=self.GC, edge_weight_fun=graph_params['edge_weight_fun'], depth=graph_params['depth'])
 		print "Running taN..."
 		self.TAN(self.Xph, self.node_batch_size)
 		print "Initializing readout layer..."
@@ -227,12 +240,15 @@ class GraphNetwork(object):
 		print "Initializing Tensorflow session and variables..."
 		self.session = tf.Session()
 		self.session.run(tf.global_variables_initializer())
-	def run(self, mode='train'):
-		assert mode in ['train', 'test']
+	def run(self, mode='train', batch_ids=None):
+		assert mode in ['train', 'predict']
 		if mode == 'train':
 			batch = self.dataset_params['dataset'].next_batch(self.mlp_params['batch_size'])
 		else:
-			batch = self.dataset_params['dataset'].next_test_batch(self.mlp_params['batch_size'])
+			if batch_ids is None:
+				batch = self.dataset_params['dataset'].next_test_batch(self.mlp_params['batch_size'])
+			else:
+				batch = self.dataset_params['dataset'].batch_from_ids(batch_ids)
 		if self.orientation == 'node':
 			focal_node_batch = batch[2].flatten()
 			node_batch = np.unique(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten())
@@ -245,6 +261,7 @@ class GraphNetwork(object):
 			subgraph_features = np.take(self.TAN.subgraph_features[0], focal_node_batch)
 			subgraph_feature_zero_pad = [np.zeros((max_neighborhood_size - neighborhood_sizes[k], subgraph_features[0].shape[1])) for k in range(self.mlp_params['batch_size'])]
 			subgraph_features = np.concatenate([np.concatenate([subgraph_features[k], subgraph_feature_zero_pad[k]], axis=0) for k in range(self.mlp_params['batch_size'])], axis=0)
+			row_normalize(subgraph_features)
 			graph_feature_padder = np.stack([range(k*max_neighborhood_size, k*max_neighborhood_size + neighborhood_sizes[k]) + [subgraph_features.shape[0]]*(max_neighborhood_size-neighborhood_sizes[k]) for k in range(self.mlp_params['batch_size'])], axis=0)
 			if mode == 'train':
 				self.session.run(self.update, \
@@ -255,14 +272,13 @@ class GraphNetwork(object):
 								 			self.TAN.SGph[0]: subgraph_features, \
 								 			self.dropout: 0.5,
 								 			self.filter_dropout: 0.5})
-			iter_cost, iter_acc = self.session.run([self.cost, tf.reduce_mean(tf.cast(tf.equal(tf.argmax(self.prediction, axis=1), tf.argmax(self.Yph, axis=1)), tf.float32))], \
-							feed_dict={self.Xph: X, \
+			self.feed_dict = {self.Xph: X, \
 								 		self.Yph: batch[1], \
 								 		self.TAN.NBph[0]: translate_array(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten(), translate_nb_dict), \
 								 		self.TAN.GFph[0]: graph_feature_padder.flatten(), \
 								 		self.TAN.SGph[0]: subgraph_features, \
 								 		self.dropout: 0, \
-								 		self.filter_dropout: 0})
+								 		self.filter_dropout: 0}
 		else:
 			if mode == 'train':
 				self.session.run(self.update, \
@@ -270,12 +286,27 @@ class GraphNetwork(object):
 								 			self.Yph: batch[1], \
 								 			self.dropout: 0,
 								 			self.filter_dropout: 0})
-			iter_cost, iter_acc = self.session.run([self.cost, tf.reduce_mean(tf.cast(tf.equal(tf.argmax(self.prediction, axis=1), tf.argmax(self.Yph, axis=1)), tf.float32))], \
-							feed_dict={self.Xph: batch[0], \
+			self.feed_dict = {self.Xph: batch[0], \
 								 		self.Yph: batch[1], \
 								 		self.dropout: 0, \
-								 		self.filter_dropout: 0})
-		return iter_cost, iter_acc
+								 		self.filter_dropout: 0}
+	def eval(self, objects):
+		return self.session.run(objects, feed_dict=self.feed_dict)
+	def predict(self, sample_ids):
+		batch_size = self.mlp_params['batch_size']
+		X = np.take(self.dataset_params['dataset'].features, sample_ids.flatten(), axis=0)
+		n_samples = X.shape[0]
+		prediction = []
+		for i in range((n_samples / batch_size) + 1):
+			batch_ids = np.mod(np.array(range(i*batch_size, (i+1)*batch_size)), n_samples)
+			self.run('predict', batch_ids=np.take(sample_ids, batch_ids))
+			prediction.append(self.eval(self.prediction))
+		prediction = np.concatenate(prediction)
+		return np.take(prediction, np.arange(n_samples))
+
+
+
+
 
 
 

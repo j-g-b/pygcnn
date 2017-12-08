@@ -1,4 +1,3 @@
-from tensorflow.examples.tutorials.mnist import input_data
 import tensorflow as tf
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -9,6 +8,8 @@ from sklearn.metrics import roc_auc_score
 from taigapy import TaigaClient
 import seaborn as sns
 import random
+import sys
+import datetime
 
 from pygcnn.utils import *
 from pygcnn.indexing import *
@@ -16,7 +17,9 @@ from pygcnn.layers import *
 from pygcnn.backbone import *
 
 # Load graph
-dep_graph = nx.read_gpickle("data/pickles/gene_embedding.gpickle")
+dep_graph = parse_gene_graph("data/reactome_functional_interactions/FIsInGene_022717_with_annotations.txt")
+hallmark_genes = pd.read_csv("data/cancer_gene_census/Census_allThu_Dec_7_14_32_15_2017.csv")
+hallmark_genes = np.array(hallmark_genes['Gene Symbol']).tolist()
 
 # Load training + test data
 client = Competition()
@@ -26,12 +29,10 @@ features = taiga_client.get(name='rnaseq-gene-expression-5362', file='RNAseq_CCL
 targets = taiga_client.get(name='avana-1-2-8b72', version=2, file='gene_dependency').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
 
 cls = list(set(list(features.transpose())) & set(list(targets.transpose())))
-random.shuffle(cls)
-train_cls = cls[50:]
-test_cls = cls[:50]
 
-feature_genes = list(set(dep_graph.nodes()) & set(list(features)))
-target_genes = list(set(client.get_genes()) & set(list(targets)))
+feature_genes = list(set(dep_graph.nodes()) & set(list(features)) & set(hallmark_genes))
+#target_genes = list(set(client.get_genes()) & set(list(targets)))
+target_genes = [sys.argv[1]]
 
 features = features[feature_genes]
 targets = targets[target_genes]
@@ -39,80 +40,89 @@ gene2int = {list(features)[i]: i for i in range(features.shape[1])}
 int2gene = {i: list(features)[i] for i in range(features.shape[1])}
 dep_graph = nx.relabel_nodes(dep_graph.subgraph(list(features)), gene2int)
 
-features = {'train': features.loc[train_cls].dropna(axis=0, how='all'), 'test': features.loc[test_cls]}
-targets = {'train': targets.loc[train_cls].dropna(axis=0, how='all'), 'test': targets.loc[test_cls]}
+features = features.loc[cls].dropna(axis=0, how='all')
+targets = targets.loc[cls].dropna(axis=0, how='all')
 
-dependency = Dataset('dependency', np.expand_dims(features['train'].as_matrix(), axis=2), targets['train'].as_matrix(), test_size=0)
+dependency_data = Dataset('dependency', np.expand_dims(features.as_matrix(), axis=2), np.round(targets.as_matrix()), test_size=0.1, stratify=True)
 
-n_node_features = dependency.train_x.shape[2]
-batch_size = 10
-n_timepoints = 20
-graph_hidden_layer_size = 10
-filter_size = 32
-n_filter_features = 128
-hidden_layer_size = 1024
-keep_prob = 1.0
-learning_rate = 2.5e-5
-soft_sharing = 1.0
-filter_shape = [[filter_size, n_filter_features, n_node_features]]
+dataset_params = { \
 
-edge_weights = [np.array([0.9, 0.9])]
-keep_prob_ph = tf.placeholder(tf.float32)
-hidden_mask = tf_task_mask([hidden_layer_size, targets['train'].shape[1]], soft_sharing=soft_sharing)
+	'dataset': dependency_data \
 
-# Placeholders
-dep_x = tf.placeholder("float32", shape=(batch_size, dependency.train_x.shape[1], dependency.train_x.shape[2]))
-dep_y = tf.placeholder("float32", shape=(batch_size, dependency.train_y.shape[1]))
+}
 
-Convolve1 = GraphConvolution(name='first_conv', G=dep_graph, filter_shape=filter_shape, n_layers=1, n_timepoints=n_timepoints, partition_resolution=[0.1], index_hidden_layer_size=graph_hidden_layer_size, edge_weights=edge_weights, act_fun=tf.nn.elu)
-conv_output = Convolve1(dep_x)
-convolved_features = tf.reshape(conv_output, [-1, conv_output.get_shape().as_list()[1]*conv_output.get_shape().as_list()[2]])
-OutputMLP = MLP(name='dense_output', dims=[[convolved_features.get_shape().as_list()[1], hidden_layer_size], [hidden_layer_size, dependency.train_y.shape[1]]], output_fun=tf.identity, dropout=[1 - keep_prob_ph, 0], mask=[None, None])
-yhat = OutputMLP(tf.concat([convolved_features], axis=1))
+graph_params = { \
 
-prediction = yhat
-cost = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=dep_y, logits=yhat))
-updates = tf.train.AdamOptimizer(learning_rate).minimize(cost)
+	'G': dep_graph, \
+	'depth': 1, \
+	'edge_weight_fun': gene_edge_fun \
+}
 
-print "Initializing variables..."
-sess = tf.Session()
-sess.run(tf.global_variables_initializer())
+mlp_params = { \
 
-loss = []
-plt.ion()
-print "Starting training..."
-for epoch in range(1000):
-	dep_batch = dependency.next_batch(batch_size)
-	dep_val_batch = dependency.next_test_batch(batch_size)
-	deps = dep_batch[0]
-	sess.run(updates, feed_dict={dep_x: deps, dep_y: dep_batch[1], keep_prob_ph: keep_prob})
-	if epoch % 5 == 0:
-		predict = sess.run(tf.nn.sigmoid(prediction), feed_dict={dep_x: deps, dep_y: dep_batch[1], keep_prob_ph: 1.0})
-		val_predict = sess.run(tf.nn.sigmoid(prediction), feed_dict={dep_x: dep_val_batch[0], dep_y: dep_val_batch[1], keep_prob_ph: 1.0})
-		acc = sess.run(cost, feed_dict={dep_x: deps, dep_y: dep_batch[1], keep_prob_ph: 1.0})
-		val_acc = sess.run(cost, feed_dict={dep_x: dep_val_batch[0], dep_y: dep_val_batch[1], keep_prob_ph: 1.0})
-		train_auc = []
-		val_auc = []
-		for i in range(dep_val_batch[1].shape[1]):
-			try:
-				train_auc.append(roc_auc_score(np.where(dep_batch[1][:,i]>0.5, 1, 0), predict[:,i]))
-				val_auc.append(roc_auc_score(np.where(dep_val_batch[1][:,i]>0.5, 1, 0), val_predict[:,i]))
-			except ValueError:
+	'batch_size': 25, \
+	'n_node_features': 1, \
+	'n_target_features': dependency_data.train_y.shape[1], \
+	'signal_time': 16, \
+	'index_hidden': 32, \
+	'n_layers': 1, \
+	'filter_shape': [[25, 32, 1]], \
+	'mlp_dims': [[32*dependency_data.train_x.shape[1], 256], [256, dependency_data.train_y.shape[1]]], \
+	'act_fun': [tf.nn.elu] \
+
+}
+
+def dep_loss(true, pred):
+	return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=true, logits=pred))
+
+learning_params = { \
+
+	'cost_function': dep_loss, \
+	'optimizer': tf.train.AdamOptimizer, \
+	'learning_rate': 1e-6
+	
+}
+
+gNet = GraphNetwork('dependency', dataset_params, graph_params, mlp_params, learning_params, orientation='graph')
+
+#plt.ion()
+cost = []
+test_cost = []
+iter_arr = []
+i = 0
+test_auc = 0
+improvement_window = 10
+curr_epoch = 0
+while True:
+	gNet.run('train')
+	if gNet.dataset_params['dataset'].epoch % improvement_window == 0 and gNet.dataset_params['dataset'].epoch >= curr_epoch:
+		if roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids))) <= test_auc:
+			break
+		else:
+			test_auc = roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids)))
+		curr_epoch = curr_epoch + improvement_window
+	if i%50 == 0:
+		tr_cost = gNet.eval(gNet.cost)
+		tr_auc = []
+		labels = gNet.eval(gNet.Yph)
+		preds = gNet.eval(tf.nn.sigmoid(gNet.prediction))
+		for j in range(dependency_data.train_y.shape[1]):
+			if np.sum(labels[:,j]) == 0 or np.sum(labels[:,j]) == labels.shape[0]:
 				pass
-		val_auc = np.array(val_auc)
-		train_auc = np.array(train_auc)
-		print "Cost: " + str(acc) + ", AUC: " + str(np.mean(train_auc)) + ", Test cost: " + str(val_acc) + ", Test AUC: " + str(np.mean(val_auc))
-		test_set_preds = np.zeros((features['test'].as_matrix().shape[0], len(target_genes)))
-		for test_epoch in range(int(np.ceil(float(features['test'].as_matrix().shape[0]) / batch_size))):
-			indices = np.array(range((batch_size*test_epoch), batch_size*(test_epoch+1))) % features['test'].as_matrix().shape[0]
-			print indices
-			test_set_preds[indices, :] = sess.run(tf.nn.sigmoid(prediction), feed_dict={dep_x: np.expand_dims(features['test'].as_matrix()[indices,:], axis=2), dep_y: targets['test'].as_matrix()[indices,:], keep_prob_ph: 1.0})
-		test_auc = []
-		for i in range(targets['test'].as_matrix().shape[1]):
-			try:
-				test_auc.append(roc_auc_score(np.where(targets['test'].as_matrix()[:,i]>0.5, 1, 0), test_set_preds[:,i]))
-			except ValueError:
-				test_auc.append(np.nan)
+			else:
+				auc = roc_auc_score(labels[:,j], preds[:,j])
+				tr_auc.append(auc)
+		cost.append(np.mean(np.array(tr_auc)))
+		print "AUC is: " + str(np.mean(np.array(tr_auc)))
+		print "Test AUC is: " + str(roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids))))
+		print "Epoch is: " + str(gNet.dataset_params['dataset'].epoch)
+		#plt.clf()
+		#plt.scatter(preds, labels)
+		#plt.pause(0.001)
+	i += 1
 
-results_df = pd.DataFrame(data={'gene': list(targets['test']), 'auc': test_auc, 'num_dep': np.sum(np.where(targets['test'].as_matrix()>0.5, 1, 0), axis=0)})
-results_df.to_csv("~/Desktop/graph_conv_results.csv", index=False)
+outfile = open('results/dep/' + sys.argv[1] + '_' + '{:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now()) + '.txt', 'w')
+outlist = [sys.argv[1], test_auc]
+for item in outlist:
+  outfile.write("%s\n" % item)
+outfile.close()

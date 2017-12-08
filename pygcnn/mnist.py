@@ -44,7 +44,8 @@ dataset_params = { \
 graph_params = { \
 
 	'G': mnist_graph, \
-	'depth': 2 \
+	'depth': 2, \
+	'edge_weight_fun': mnist_edge_fun
 }
 
 mlp_params = { \
@@ -64,6 +65,9 @@ mlp_params = { \
 def mnist_loss(true, pred):
 	return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=true, logits=pred))
 
+def mnist_accuracy(true, pred):
+	return tf.reduce_mean(tf.cast(tf.equal(tf.argmax(true, axis=1), tf.argmax(tf.nn.softmax(pred), axis=1)), tf.float32))
+
 learning_params = { \
 
 	'cost_function': mnist_loss, \
@@ -74,15 +78,20 @@ learning_params = { \
 
 gNet = GraphNetwork('MNIST', dataset_params, graph_params, mlp_params, learning_params, orientation='graph')
 
+plt.figure()
+plt.ion()
 acc_arr = []
 for i in range(8000):
-	tr_cost, tr_acc = gNet.run('train')
-	acc_arr.append(tr_acc)
+	gNet.run('train')
+	acc_arr.append(gNet.eval(mnist_accuracy(gNet.Yph, gNet.prediction)))
 	if i % 100 == 0:
 		avg_acc = 0
 		for j in range(1):
-			cost, acc = gNet.run('test')
-			avg_acc += acc
+			gNet.run('predict')
+			avg_acc += gNet.eval(mnist_accuracy(gNet.Yph, gNet.prediction))
 		print "\nAverage test accuracy: " + str(avg_acc)
 		print "Average train accuracy: " + str(np.mean(np.array(acc_arr)))
+		plotNNFilter(gNet.eval(gNet.GC.activation[0]), gNet.GC.filter_weights[0].eval(session=gNet.session))
+		plt.pause(0.001)
+		plt.clf()
 		acc_arr = []

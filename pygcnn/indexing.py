@@ -32,11 +32,17 @@ def tf_index_node(graph, node, edge_weights, n_timepoints, mlp):
 	indexer_output = mlp(tf.constant(subgraph_features, dtype=tf.float32))
 	return indexer_output, d_neighborhood
 
-def index_graph(graph, edge_weights, n_timepoints):
+def mnist_rel_coords(neighborhoods):
+    rel_coords = []
+    for n in range(len(neighborhoods)):
+        rel_coords.append([[((n%28) - (neighborhoods[n][i]%28)), ((n/28) - (neighborhoods[n][i]/28)), n] for i in range(len(neighborhoods[n]))])
+    return rel_coords
+
+def index_graph(graph, depth, n_timepoints, edge_weight_fun):
     subgraph_features = []
     neighborhoods = []
     for node in graph.nodes():
-        d_neighborhood = make_neighborhood(graph, node, edge_weights)
+        d_neighborhood = make_neighborhood(graph, node, depth, edge_weight_fun)
         A = normalized_adj(d_neighborhood)
         x = np.zeros((A.shape[0], 1))
         for j in range(x.size):
@@ -61,10 +67,10 @@ def plotNNFilter(units, weights):
         	plt.imshow(np.reshape(units[j,:,i], (28,28)), interpolation="nearest", cmap="gray")
         plt.show()
     	plt.pause(0.001)
-    	plt.clf()
-    	for i in range(filter_weights):
-        	plt.subplot(n_rows, n_columns, i+1)
-        	plt.title('Filter ' + str(i))
-        	plt.imshow(np.reshape(weights[:,i,0], (5,5)), interpolation="nearest", cmap="gray")
-        plt.show()
-    	plt.pause(0.001)
+    	# plt.clf()
+    	# for i in range(filter_weights):
+     #    	plt.subplot(n_rows, n_columns, i+1)
+     #    	plt.title('Filter ' + str(i))
+     #    	plt.imshow(np.reshape(weights[:,i,0], (5,5)), interpolation="nearest", cmap="gray")
+     #    plt.show()
+    	# plt.pause(0.001)
