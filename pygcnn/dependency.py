@@ -26,13 +26,12 @@ client = Competition()
 taiga_client = TaigaClient()
 
 features = taiga_client.get(name='rnaseq-gene-expression-5362', file='RNAseq_CCLE_RSEM_TPM', version='6').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
-targets = taiga_client.get(name='avana-1-2-8b72', version=2, file='gene_dependency').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
-
-cls = list(set(list(features.transpose())) & set(list(targets.transpose())))
+targets = taiga_client.get(name='avana-564b', version=18, file='gene_dependency').transpose().rename(lambda x: x.split(" (", 1)[0]).transpose()
 
 feature_genes = list(set(dep_graph.nodes()) & set(list(features)) & set(hallmark_genes))
-#target_genes = list(set(client.get_genes()) & set(list(targets)))
 target_genes = [sys.argv[1]]
+
+cls = list(set(list(features.transpose())) & set(list(targets.transpose())))
 
 features = features[feature_genes]
 targets = targets[target_genes]
@@ -43,7 +42,7 @@ dep_graph = nx.relabel_nodes(dep_graph.subgraph(list(features)), gene2int)
 features = features.loc[cls].dropna(axis=0, how='all')
 targets = targets.loc[cls].dropna(axis=0, how='all')
 
-dependency_data = Dataset('dependency', np.expand_dims(features.as_matrix(), axis=2), np.round(targets.as_matrix()), test_size=0.1, stratify=True)
+dependency_data = Dataset('dependency', np.expand_dims(features.as_matrix(), axis=2), np.round(targets.as_matrix()), val_size=0.1, test_size=0.1, stratify=True)
 
 dataset_params = { \
 
@@ -91,14 +90,18 @@ test_cost = []
 iter_arr = []
 i = 0
 test_auc = 0
+val_auc = 0
 improvement_window = 10
 curr_epoch = 0
 while True:
 	gNet.run('train')
 	if gNet.dataset_params['dataset'].epoch % improvement_window == 0 and gNet.dataset_params['dataset'].epoch >= curr_epoch:
-		if roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids))) <= test_auc:
+		if roc_auc_score(dependency_data.val_y, sigmoid(gNet.predict(dependency_data.val_ids))) <= val_auc:
+			val_auc = roc_auc_score(dependency_data.val_y, sigmoid(gNet.predict(dependency_data.val_ids)))
+			test_auc = roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids)))
 			break
 		else:
+			val_auc = roc_auc_score(dependency_data.val_y, sigmoid(gNet.predict(dependency_data.val_ids)))
 			test_auc = roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids)))
 		curr_epoch = curr_epoch + improvement_window
 	if i%50 == 0:
@@ -114,6 +117,7 @@ while True:
 				tr_auc.append(auc)
 		cost.append(np.mean(np.array(tr_auc)))
 		print "AUC is: " + str(np.mean(np.array(tr_auc)))
+		print "Validation AUC is: " + str(roc_auc_score(dependency_data.val_y, sigmoid(gNet.predict(dependency_data.val_ids))))
 		print "Test AUC is: " + str(roc_auc_score(dependency_data.test_y, sigmoid(gNet.predict(dependency_data.test_ids))))
 		print "Epoch is: " + str(gNet.dataset_params['dataset'].epoch)
 		#plt.clf()
@@ -122,7 +126,11 @@ while True:
 	i += 1
 
 outfile = open('results/dep/' + sys.argv[1] + '_' + '{:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now()) + '.txt', 'w')
-outlist = [sys.argv[1], test_auc]
+outlist = [sys.argv[1], val_auc, test_auc, gNet.dataset_params['dataset'].epoch]
 for item in outlist:
   outfile.write("%s\n" % item)
 outfile.close()
+
+# np.savetxt(outdir + 'train_ids.txt', gNet.dataset_params['dataset'].train_ids)
+# np.savetxt(outdir + 'val_ids.txt', gNet.dataset_params['dataset'].val_ids)
+# np.savetxt(outdir + 'test_ids.txt', gNet.dataset_params['dataset'].test_ids)

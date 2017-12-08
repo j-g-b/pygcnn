@@ -8,8 +8,9 @@ from pygcnn.utils import *
 from pygcnn.indexing import *
 
 class Dataset(object):
-	def __init__(self, name, features, targets, test_size=None, split=None, stratify=None):
+	def __init__(self, name, features, targets, test_size=None, val_size=None, split=None, stratify=None):
 		assert features.shape[0] == targets.shape[0]
+		assert test_size is not None or val_size is not None
 		self.name = name
 		self.epoch = 0
 		self.features = features
@@ -19,21 +20,30 @@ class Dataset(object):
 		if split is None:
 			if self.test_size is not None:
 				if stratify:
-					stratify = targets
-				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size, stratify=stratify)
+					stratify_by = targets
+				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size, stratify=stratify_by)
+				if stratify:
+					stratify_by = self.train_y
+				self.train_x, self.val_x, self.train_y, self.val_y, self.train_ids, self.val_ids = train_test_split(self.train_x, self.train_y, self.train_ids, test_size=val_size / (1.0 - test_size), stratify=stratify_by)
 			else:
-				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = features, np.copy(features), targets, np.copy(targets), np.copy(self.sample_ids), np.copy(self.sample_ids)
+				self.train_x, self.val_x, self.train_y, self.val_y, self.train_ids, self.val_ids = features, np.copy(features), targets, np.copy(targets), np.copy(self.sample_ids), np.copy(self.sample_ids)
 		else:
 			self.train_x = np.take(features, split[0], axis=0)
 			self.train_y = np.take(targets, split[0], axis=0)
-			self.test_x = np.take(features, split[1], axis=0)
-			self.test_y = np.take(targets, split[1], axis=0)
+			self.val_x = np.take(features, split[1], axis=0)
+			self.val_y = np.take(targets, split[1], axis=0)
+			self.test_x = np.take(features, split[2], axis=0)
+			self.test_y = np.take(targets, split[2], axis=0)
 			self.train_ids = split[0]
-			self.test_ids = split[1]
+			self.val_ids = split[1]
+			self.test_ids = split[2]
+		assert len(list(set(self.test_ids.flatten().tolist()) & set(self.val_ids.flatten().tolist()) & set(self.train_ids.flatten().tolist()))) == 0
+		assert np.all(np.isin(np.concatenate([self.test_ids, self.val_ids, self.train_ids]).flatten(), self.sample_ids.flatten()))
+		assert np.all(np.isin(self.sample_ids.flatten(), np.concatenate([self.test_ids, self.val_ids, self.train_ids]).flatten()))
 		self.train_batch_indx = 0
 		self.train_indices = np.random.permutation(self.train_x.shape[0])
-		self.test_batch_indx = 0
-		self.test_indices = np.random.permutation(self.test_x.shape[0])
+		self.val_batch_indx = 0
+		self.val_indices = np.random.permutation(self.val_x.shape[0])
 	def next_batch(self, batch_size):
 		# returns tuple containing:
 		# 	0: batch of X data with `batch_size` rows
@@ -52,7 +62,7 @@ class Dataset(object):
 		self.train_batch_indx = (self.train_batch_indx + batch_size) % self.train_x.shape[0]
 		next_batch = (np.stack(next_x_batch, axis=0), np.stack(next_y_batch, axis=0), np.stack(next_id_batch, axis=0))
 		return next_batch
-	def next_test_batch(self, batch_size):
+	def next_val_batch(self, batch_size):
 		# returns tuple containing:
 		# 	0: batch of X data with `batch_size` rows
 		#	1: batch of Y data with `batch_size` rows
@@ -60,13 +70,13 @@ class Dataset(object):
 		next_x_batch = []
 		next_y_batch = []
 		next_id_batch = []
-		for indx in range(self.test_batch_indx, self.test_batch_indx + batch_size):
-			if indx == self.test_x.shape[0]:
-				self.test_indices = np.random.permutation(self.test_x.shape[0])
-			next_x_batch.append(self.test_x[self.test_indices[indx % self.test_x.shape[0]], :])
-			next_y_batch.append(self.test_y[self.test_indices[indx % self.test_x.shape[0]], :])
-			next_id_batch.append(self.test_ids[self.test_indices[indx % self.test_x.shape[0]]])
-		self.test_batch_indx = (self.test_batch_indx + batch_size) % self.test_x.shape[0]
+		for indx in range(self.val_batch_indx, self.val_batch_indx + batch_size):
+			if indx == self.val_x.shape[0]:
+				self.val_indices = np.random.permutation(self.val_x.shape[0])
+			next_x_batch.append(self.val_x[self.val_indices[indx % self.val_x.shape[0]], :])
+			next_y_batch.append(self.val_y[self.val_indices[indx % self.val_x.shape[0]], :])
+			next_id_batch.append(self.val_ids[self.val_indices[indx % self.val_x.shape[0]]])
+		self.val_batch_indx = (self.val_batch_indx + batch_size) % self.val_x.shape[0]
 		next_batch = (np.stack(next_x_batch, axis=0), np.stack(next_y_batch, axis=0), np.stack(next_id_batch, axis=0))
 		return next_batch
 	def batch_from_ids(self, ids):
