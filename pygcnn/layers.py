@@ -2,7 +2,6 @@ import tensorflow as tf
 import numpy as np
 from sklearn.model_selection import train_test_split
 import datetime
-import community as cm
 
 from pygcnn.utils import *
 from pygcnn.indexing import *
@@ -10,7 +9,6 @@ from pygcnn.indexing import *
 class Dataset(object):
 	def __init__(self, name, features, targets, test_size=None, val_size=None, split=None, stratify=None):
 		assert features.shape[0] == targets.shape[0]
-		assert test_size is not None or val_size is not None
 		self.name = name
 		self.epoch = 0
 		self.features = features
@@ -20,10 +18,14 @@ class Dataset(object):
 		if split is None:
 			if self.test_size is not None:
 				if stratify:
-					stratify_by = targets
+					stratify_by = np.round(targets)
+				else:
+					stratify_by = None
 				self.train_x, self.test_x, self.train_y, self.test_y, self.train_ids, self.test_ids = train_test_split(features, targets, self.sample_ids, test_size=test_size, stratify=stratify_by)
 				if stratify:
-					stratify_by = self.train_y
+					stratify_by = np.round(self.train_y)
+				else:
+					stratify_by = None
 				self.train_x, self.val_x, self.train_y, self.val_y, self.train_ids, self.val_ids = train_test_split(self.train_x, self.train_y, self.train_ids, test_size=val_size / (1.0 - test_size), stratify=stratify_by)
 			else:
 				self.train_x, self.val_x, self.train_y, self.val_y, self.train_ids, self.val_ids = features, np.copy(features), targets, np.copy(targets), np.copy(self.sample_ids), np.copy(self.sample_ids)
@@ -37,9 +39,6 @@ class Dataset(object):
 			self.train_ids = split[0]
 			self.val_ids = split[1]
 			self.test_ids = split[2]
-		assert len(list(set(self.test_ids.flatten().tolist()) & set(self.val_ids.flatten().tolist()) & set(self.train_ids.flatten().tolist()))) == 0
-		assert np.all(np.isin(np.concatenate([self.test_ids, self.val_ids, self.train_ids]).flatten(), self.sample_ids.flatten()))
-		assert np.all(np.isin(self.sample_ids.flatten(), np.concatenate([self.test_ids, self.val_ids, self.train_ids]).flatten()))
 		self.train_batch_indx = 0
 		self.train_indices = np.random.permutation(self.train_x.shape[0])
 		self.val_batch_indx = 0
@@ -55,11 +54,12 @@ class Dataset(object):
 		for indx in range(self.train_batch_indx, self.train_batch_indx + batch_size):
 			if indx == self.train_x.shape[0]:
 				self.train_indices = np.random.permutation(self.train_x.shape[0])
+				print "\nStarting next epoch..."
 				self.epoch += 1
 			next_x_batch.append(self.train_x[self.train_indices[indx % self.train_x.shape[0]], :])
 			next_y_batch.append(self.train_y[self.train_indices[indx % self.train_x.shape[0]], :])
 			next_id_batch.append(self.train_ids[self.train_indices[indx % self.train_x.shape[0]]])
-		self.train_batch_indx = (self.train_batch_indx + batch_size) % self.train_x.shape[0]
+		self.train_batch_indx = ((self.train_batch_indx + batch_size - 1) % self.train_x.shape[0]) + 1
 		next_batch = (np.stack(next_x_batch, axis=0), np.stack(next_y_batch, axis=0), np.stack(next_id_batch, axis=0))
 		return next_batch
 	def next_val_batch(self, batch_size):
@@ -76,7 +76,7 @@ class Dataset(object):
 			next_x_batch.append(self.val_x[self.val_indices[indx % self.val_x.shape[0]], :])
 			next_y_batch.append(self.val_y[self.val_indices[indx % self.val_x.shape[0]], :])
 			next_id_batch.append(self.val_ids[self.val_indices[indx % self.val_x.shape[0]]])
-		self.val_batch_indx = (self.val_batch_indx + batch_size) % self.val_x.shape[0]
+		self.val_batch_indx = ((self.val_batch_indx + batch_size - 1) % self.val_x.shape[0]) + 1
 		next_batch = (np.stack(next_x_batch, axis=0), np.stack(next_y_batch, axis=0), np.stack(next_id_batch, axis=0))
 		return next_batch
 	def batch_from_ids(self, ids):
@@ -110,11 +110,13 @@ class MLP(object):
 		self.layers = [Layer(name=self.name + '_layer_' + str(i), input_dim=dims[i][0], output_dim=dims[i][1], act_fun=self.act_fun[i], dropout=self.dropout[i], mask=self.mask[i]) for i in range(len(dims))]
 	def __call__(self, inputs):
 		output = inputs
+		self.activation = []
 		for layer in self.layers:
 			if layer.mask is None:
 				output = layer.act_fun(tf.matmul(tf.nn.dropout(output, 1 - layer.dropout), layer.weights) + layer.bias)
 			else:
 				output = layer.act_fun(tf.matmul(tf.nn.dropout(output, 1 - layer.dropout), tf.multiply(layer.mask, layer.weights), b_is_sparse=tf.reduce_mean(layer.mask) < 0.1) + layer.bias)
+			self.activation.append(output)
 		return output
 
 class GraphConvolution(object):
@@ -144,6 +146,7 @@ class GraphConvolution(object):
 			indexer_output = self.indexing_mlp[i](subgraph_features[i])
 			indexer_output = tf.gather(tf.concat([indexer_output, tf.zeros([1, indexer_output.get_shape().as_list()[1]])], axis=0), graph_feature_padder[i])
 			indexer_output = tf.reshape(indexer_output, shape=[n_nodes[i], max(neighborhood_sizes[i]), -1])
+			#indexer_output = tf.divide(indexer_output, tf.expand_dims(tf.expand_dims(tf.constant(np.array(neighborhood_sizes[i]), dtype=tf.float32), 1), 1))
 			X_neighborhood = tf.gather(tf.concat([X, tf.zeros([1, X.get_shape().as_list()[1], X.get_shape().as_list()[2]])], axis=0), neighborhoods[i])
 			X_neighborhood = tf.reshape(X_neighborhood, shape=[n_nodes[i], max(neighborhood_sizes[i]), self.filter_shape[i][2], -1])
 			indexed_features = tf.matmul(tf.tile(tf.expand_dims(tf.transpose(indexer_output, perm=[0,2,1]), 0), [self.filter_shape[i][2], 1, 1, 1]), tf.transpose(X_neighborhood, perm=[2,0,1,3]))
@@ -254,11 +257,14 @@ class GraphNetwork(object):
 		assert mode in ['train', 'predict']
 		if mode == 'train':
 			batch = self.dataset_params['dataset'].next_batch(self.mlp_params['batch_size'])
+			self.batch = batch
 		else:
 			if batch_ids is None:
-				batch = self.dataset_params['dataset'].next_test_batch(self.mlp_params['batch_size'])
+				batch = self.dataset_params['dataset'].next_val_batch(self.mlp_params['batch_size'])
+				self.batch = batch
 			else:
 				batch = self.dataset_params['dataset'].batch_from_ids(batch_ids)
+				self.batch = batch
 		if self.orientation == 'node':
 			focal_node_batch = batch[2].flatten()
 			node_batch = np.unique(np.take(self.TAN.neighborhoods[0], focal_node_batch, axis=0).flatten())
@@ -271,7 +277,6 @@ class GraphNetwork(object):
 			subgraph_features = np.take(self.TAN.subgraph_features[0], focal_node_batch)
 			subgraph_feature_zero_pad = [np.zeros((max_neighborhood_size - neighborhood_sizes[k], subgraph_features[0].shape[1])) for k in range(self.mlp_params['batch_size'])]
 			subgraph_features = np.concatenate([np.concatenate([subgraph_features[k], subgraph_feature_zero_pad[k]], axis=0) for k in range(self.mlp_params['batch_size'])], axis=0)
-			row_normalize(subgraph_features)
 			graph_feature_padder = np.stack([range(k*max_neighborhood_size, k*max_neighborhood_size + neighborhood_sizes[k]) + [subgraph_features.shape[0]]*(max_neighborhood_size-neighborhood_sizes[k]) for k in range(self.mlp_params['batch_size'])], axis=0)
 			if mode == 'train':
 				self.session.run(self.update, \
@@ -311,8 +316,19 @@ class GraphNetwork(object):
 			batch_ids = np.mod(np.array(range(i*batch_size, (i+1)*batch_size)), n_samples)
 			self.run('predict', batch_ids=np.take(sample_ids, batch_ids))
 			prediction.append(self.eval(self.prediction))
-		prediction = np.concatenate(prediction)
-		return np.take(prediction, np.arange(n_samples))
+		prediction = np.concatenate(prediction, axis=0)
+		return np.take(prediction, np.arange(n_samples), axis=0)
+	def activate(self, sample_ids):
+		batch_size = self.mlp_params['batch_size']
+		X = np.take(self.dataset_params['dataset'].features, sample_ids.flatten(), axis=0)
+		n_samples = X.shape[0]
+		activation = []
+		for i in range((n_samples / batch_size) + 1):
+			batch_ids = np.mod(np.array(range(i*batch_size, (i+1)*batch_size)), n_samples)
+			self.run('predict', batch_ids=np.take(sample_ids, batch_ids))
+			activation.append(self.eval(self.GC.activation[0]))
+		result = np.concatenate(activation, axis=0)
+		return np.take(result, np.arange(n_samples), axis=0)
 
 
 

@@ -33,7 +33,7 @@ for node in mnist_graph.nodes():
 mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
 # Make MNIST dataset
-mnist_data = Dataset('MNIST', np.expand_dims(mnist.train.images, 2), mnist.train.labels, 0.1)
+mnist_data = Dataset('MNIST', np.expand_dims(mnist.train.images, 2), mnist.train.labels, test_size=None, val_size=0.1)
 
 dataset_params = { \
 

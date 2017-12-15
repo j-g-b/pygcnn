@@ -63,8 +63,7 @@ def plotNNFilter(units, weights):
     	plt.clf()
     	for i in range(filters):
         	plt.subplot(n_rows, n_columns, i+1)
-        	plt.title('Filter ' + str(i))
-        	plt.imshow(np.reshape(units[j,:,i], (28,28)), interpolation="nearest", cmap="gray")
+        	plt.imshow(np.reshape(units[j,:,i], (28,28)), cmap="gray")
         plt.show()
     	plt.pause(0.001)
     	# plt.clf()

@@ -1,9 +1,9 @@
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
-import matplotlib.pyplot as plt
 import tensorflow as tf
 import pandas as pd
+import matplotlib.pyplot as plt
 from scipy.stats.stats import pearsonr
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_regression
@@ -17,12 +17,26 @@ def row_normalize(X):
 		if rowsum > 0:
 			X[i, :] = X[i, :] / rowsum
 
+def col_normalize(X):
+	for i in range(X.shape[1]):
+		colsum = np.sum(np.absolute(X[:, i]))
+		if colsum > 0:
+			X[:, i] = X[:, i] / colsum
+
+def row_standardize(X):
+	for i in range(X.shape[0]):
+		X[i,:] = (X[i,:] - np.mean(X[i,:])) / np.std(X[i,:])
+
+def col_standardize(X):
+	for j in range(X.shape[1]):
+		X[:,j] = (X[:,j] - np.mean(X[:,j])) / np.std(X[:,j])
+
 def parse_gene_graph(fname):
 	with open(fname) as f:
 		lines = f.readlines()
 	header = lines[0]
 	split_lines = [line.strip("\n").split("\t") for line in lines[1:len(lines)]]
-	edge_list = [(sl[0], sl[1], {'direction': sl[3], 'score': float(sl[4])}) for sl in split_lines]
+	edge_list = [(sl[0], sl[1], {'direction': sl[3], 'score': float(sl[4])}) for sl in split_lines if float(sl[4]) == 1.0]
 	return nx.from_edgelist(edge_list)
 
 def load_pubmed(data_fname, graph_fname):
